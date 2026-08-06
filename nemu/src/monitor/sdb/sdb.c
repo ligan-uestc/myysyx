@@ -17,6 +17,9 @@
 #include <cpu/cpu.h>
 #include <readline/readline.h>
 #include <readline/history.h>
+
+#include <memory/vaddr.h>
+
 #include "sdb.h"
 
 static int is_batch_mode = false;
@@ -55,6 +58,95 @@ static int cmd_q(char *args) {
 
 static int cmd_help(char *args);
 
+
+//==========================================
+
+static int cmd_si(char *args);
+static int cmd_info(char *args);
+static int cmd_x(char *args);
+
+static int cmd_si(char *args) {
+  uint64_t n = 1;
+
+  if (args != NULL) {
+    char *end = NULL;
+
+    while (*args == ' ' || *args == '\t') {
+      args++;
+    }
+
+    if (*args == '\0' || *args == '-') {
+      printf("Usage: si [N]\n");
+      return 0;
+    }
+
+    n = strtoull(args, &end, 10);
+
+    while (*end == ' ' || *end == '\t') {
+      end++;
+    }
+
+    if (*end != '\0' || n == 0) {
+      printf("Usage: si [N]\n");
+      return 0;
+    }
+  }
+
+  cpu_exec(n);
+  return 0;
+}
+
+static int cmd_info(char *args) {
+  if (args == NULL) {
+    printf("Usage: info r\n");
+    return 0;
+  }
+
+  char *subcmd = strtok(args, " \t");
+
+  if (subcmd != NULL && strcmp(subcmd, "r") == 0) {
+    isa_reg_display();
+  }
+  else {
+    printf("Usage: info r\n");
+  }
+
+  return 0;
+}
+
+static int cmd_x(char *args) {
+  unsigned int n;
+  char expr_str[64];
+
+  if (args == NULL || sscanf(args, "%u %63s", &n, expr_str) != 2 || n == 0) {
+    printf("Usage: x N HEXADDR\n");
+    return 0;
+  }
+
+  char *end = NULL;
+  unsigned long value = strtoul(expr_str, &end, 0);
+
+  if (*expr_str == '\0' || *end != '\0') {
+    printf("Invalid address: %s\n", expr_str);
+    return 0;
+  }
+
+  vaddr_t addr = (vaddr_t)value;
+
+  for (unsigned int i = 0; i < n; i++) {
+    vaddr_t current = addr + i * 4;
+    word_t data = vaddr_read(current, 4);
+    printf(FMT_WORD ": " FMT_WORD "\n", current, data);
+  }
+
+  return 0;
+}
+
+
+
+
+//==========================================
+
 static struct {
   const char *name;
   const char *description;
@@ -63,6 +155,9 @@ static struct {
   { "help", "Display information about all supported commands", cmd_help },
   { "c", "Continue the execution of the program", cmd_c },
   { "q", "Exit NEMU", cmd_q },
+  { "si", "Step instruction", cmd_si },
+  { "info", "Print program status", cmd_info },
+  { "x", "Examine memory", cmd_x },
 
   /* TODO: Add more commands */
 
