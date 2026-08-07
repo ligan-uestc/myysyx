@@ -14,11 +14,47 @@
 ***************************************************************************************/
 
 #include <common.h>
+#include <stdio.h>
+#include "monitor/sdb/sdb.h"
 
 void init_monitor(int, char *[]);
 void am_init_monitor();
 void engine_start();
 int is_exit_status_bad();
+
+
+// static void test_expr(void) {
+//   FILE *fp = fopen("input", "r");
+//   Assert(fp != NULL, "cannot open input");
+
+//   unsigned expected;
+//   char expression[65536];
+//   int line = 0;
+//   int passed = 0;
+
+//   while (fscanf(fp, "%u %65535[^\n]", &expected, expression)
+//   == 2) {
+//     line++;
+
+//     bool success = true;
+//     word_t actual = expr(expression, &success);
+
+//     if (!success || actual != (word_t)expected) {
+//       printf("FAIL line %d:\n", line);
+//       printf("  expected = %u\n", expected);
+//       printf("  actual   = " FMT_WORD "\n", actual);
+//       printf("  expr     = %s\n", expression);
+//       fclose(fp);
+//       return;
+//     }
+
+//     passed++;
+//   }
+
+//   fclose(fp);
+//   printf("PASS: %d expressions\n", passed);
+// }
+
 
 int main(int argc, char *argv[]) {
   /* Initialize the monitor. */
@@ -33,3 +69,18 @@ int main(int argc, char *argv[]) {
 
   return is_exit_status_bad();
 }
+
+
+// int main(int argc, char *argv[]) {
+// #ifdef CONFIG_TARGET_AM
+//   am_init_monitor();
+// #else
+//   init_monitor(argc, argv);
+// #endif
+
+//   test_expr();
+
+//   return 0;
+// }
+
+

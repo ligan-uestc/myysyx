@@ -17,6 +17,7 @@
 #include <cpu/cpu.h>
 #include <readline/readline.h>
 #include <readline/history.h>
+#include <limits.h>
 
 #include <memory/vaddr.h>
 
@@ -64,6 +65,7 @@ static int cmd_help(char *args);
 static int cmd_si(char *args);
 static int cmd_info(char *args);
 static int cmd_x(char *args);
+static int cmd_p(char *args);
 
 static int cmd_si(char *args) {
   uint64_t n = 1;
@@ -115,30 +117,59 @@ static int cmd_info(char *args) {
 }
 
 static int cmd_x(char *args) {
-  unsigned int n;
-  char expr_str[64];
-
-  if (args == NULL || sscanf(args, "%u %63s", &n, expr_str) != 2 || n == 0) {
-    printf("Usage: x N HEXADDR\n");
+  if (args == NULL) {
+    printf("Usage: x N EXPR\n");
     return 0;
   }
 
+  while (*args == ' ' || *args == '\t') {
+    args++;
+  }
   char *end = NULL;
-  unsigned long value = strtoul(expr_str, &end, 0);
-
-  if (*expr_str == '\0' || *end != '\0') {
-    printf("Invalid address: %s\n", expr_str);
+  unsigned long count = strtoul(args, &end, 10);
+  if (end == args || count == 0 || count > UINT_MAX) {
+    printf("Usage: x N EXPR\n");
     return 0;
   }
 
-  vaddr_t addr = (vaddr_t)value;
+  while (*end == ' ' || *end == '\t') {
+    end++;
+  }
+  if (*end == '\0') {
+    printf("Usage: x N EXPR\n");
+    return 0;
+  }
 
-  for (unsigned int i = 0; i < n; i++) {
+  bool success = true;
+  vaddr_t addr = (vaddr_t)expr(end, &success);
+  if (!success) {
+    printf("Bad expression.\n");
+    return 0;
+  }
+
+  for (unsigned int i = 0; i < (unsigned int)count; i++) {
     vaddr_t current = addr + i * 4;
     word_t data = vaddr_read(current, 4);
     printf(FMT_WORD ": " FMT_WORD "\n", current, data);
   }
 
+  return 0;
+}
+
+static int cmd_p(char *args) {
+  if (args == NULL) {
+    printf("Usage: p EXPR\n");
+    return 0;
+  }
+
+  bool success = true;
+  word_t value = expr(args, &success);
+  if (!success) {
+    printf("Bad expression.\n");
+    return 0;
+  }
+
+  printf(FMT_WORD "\n", value);
   return 0;
 }
 
@@ -158,6 +189,7 @@ static struct {
   { "si", "Step instruction", cmd_si },
   { "info", "Print program status", cmd_info },
   { "x", "Examine memory", cmd_x },
+  { "p", "Evaluate expression", cmd_p },
 
   /* TODO: Add more commands */
 

@@ -22,7 +22,8 @@
 
 // this should be enough
 static char buf[65536] = {};
-static char code_buf[65536 + 128] = {}; // a little larger than `buf`
+static size_t buf_pos = 0;
+static char code_buf[65536 + 128] = {};
 static char *code_format =
 "#include <stdio.h>\n"
 "int main() { "
@@ -31,8 +32,92 @@ static char *code_format =
 "  return 0; "
 "}";
 
+static uint32_t choose(uint32_t n) {
+  assert(n > 0);
+  return (uint32_t)rand() % n;
+}
+
+static uint32_t rand_u32() {
+  return ((uint32_t)rand() << 17) ^ ((uint32_t)rand() << 2) ^ (uint32_t)rand();
+}
+
+static void append_text(const char *text) {
+  size_t len = strlen(text);
+  assert(buf_pos + len < sizeof(buf));
+  memcpy(buf + buf_pos, text, len);
+  buf_pos += len;
+  buf[buf_pos] = '\0';
+}
+
+static void append_char(char c) {
+  assert(buf_pos + 1 < sizeof(buf));
+  buf[buf_pos++] = c;
+  buf[buf_pos] = '\0';
+}
+
+static void append_space() {
+  if (choose(2) == 0) {
+    append_char(' ');
+  }
+}
+
+static void append_number(uint32_t value) {
+  char number[16];
+  int len = snprintf(number, sizeof(number), "%u", (unsigned)value);
+  assert(len > 0 && (size_t)len < sizeof(number));
+  append_text(number);
+  append_char('u');
+}
+
+static uint32_t gen_expr(int depth) {
+  enum { MAX_DEPTH = 6 };
+
+  if (depth >= MAX_DEPTH || choose(3) == 0) {
+    uint32_t value = rand_u32();
+    append_number(value);
+    return value;
+  }
+
+  if (choose(2) == 0) {
+    append_char('(');
+    append_space();
+    uint32_t value = gen_expr(depth + 1);
+    append_space();
+    append_char(')');
+    return value;
+  }
+
+  append_char('(');
+  append_space();
+  uint32_t left = gen_expr(depth + 1);
+  append_space();
+  char op = "+-*/"[choose(4)];
+  append_char(op);
+  append_space();
+
+  size_t right_start = buf_pos;
+  uint32_t right;
+  do {
+    buf_pos = right_start;
+    buf[buf_pos] = '\0';
+    right = gen_expr(depth + 1);
+  } while (op == '/' && right == 0);
+
+  append_space();
+  append_char(')');
+
+  switch (op) {
+    case '+': return left + right;
+    case '-': return left - right;
+    case '*': return left * right;
+    default: return left / right;
+  }
+}
+
 static void gen_rand_expr() {
+  buf_pos = 0;
   buf[0] = '\0';
+  gen_expr(0);
 }
 
 int main(int argc, char *argv[]) {
@@ -59,8 +144,8 @@ int main(int argc, char *argv[]) {
     fp = popen("/tmp/.expr", "r");
     assert(fp != NULL);
 
-    int result;
-    ret = fscanf(fp, "%d", &result);
+    unsigned result;
+    ret = fscanf(fp, "%u", &result);
     pclose(fp);
 
     printf("%u %s\n", result, buf);
