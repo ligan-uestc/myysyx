@@ -66,6 +66,8 @@ static int cmd_si(char *args);
 static int cmd_info(char *args);
 static int cmd_x(char *args);
 static int cmd_p(char *args);
+static int cmd_w(char *args);
+static int cmd_d(char *args);
 
 static int cmd_si(char *args) {
   uint64_t n = 1;
@@ -109,8 +111,11 @@ static int cmd_info(char *args) {
   if (subcmd != NULL && strcmp(subcmd, "r") == 0) {
     isa_reg_display();
   }
+  else if (subcmd != NULL && strcmp(subcmd, "w") == 0) {
+    wp_display();
+  }
   else {
-    printf("Usage: info r\n");
+    printf("Usage: info r|w\n");
   }
 
   return 0;
@@ -173,6 +178,44 @@ static int cmd_p(char *args) {
   return 0;
 }
 
+static int cmd_w(char *args) {
+  if (args == NULL || *args == '\0') {
+    printf("Usage: w EXPR\n");
+    return 0;
+  }
+
+  if (!wp_add(args)) {
+    printf("Bad expression.\n");
+  }
+  return 0;
+}
+
+static int cmd_d(char *args) {
+  if (args == NULL) {
+    printf("Usage: d N\n");
+    return 0;
+  }
+
+  char *end = NULL;
+  long number = strtol(args, &end, 10);
+  while (*end == ' ' || *end == '\t') {
+    end++;
+  }
+  if (end == args || *end != '\0') {
+    printf("Usage: d N\n");
+    return 0;
+  }
+
+  if (!wp_delete((int)number)) {
+    printf("Watchpoint %ld not found.\n", number);
+  }
+  else {
+    printf("Watchpoint %ld deleted.\n", number);
+  }
+
+  return 0;
+}
+
 
 
 
@@ -190,6 +233,8 @@ static struct {
   { "info", "Print program status", cmd_info },
   { "x", "Examine memory", cmd_x },
   { "p", "Evaluate expression", cmd_p },
+  { "w", "Set watchpoint", cmd_w },
+  { "d", "Delete watchpoint", cmd_d },
 
   /* TODO: Add more commands */
 

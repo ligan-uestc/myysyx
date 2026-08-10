@@ -151,6 +151,13 @@ config ITRACE_COND
   string "Only trace instructions when the condition is true"
   default "true"
 
+config WATCHPOINT
+  depends on TARGET_NATIVE_ELF && ENGINE_INTERPRETER
+  bool "Enable watchpoint checking"
+  default y
+  help
+    Check watchpoints after every guest instruction.
+    Disable it to reduce execution overhead when watchpoints are not needed.
 
 config DIFFTEST
   depends on TARGET_NATIVE_ELF

@@ -16,12 +16,13 @@
 #include "sdb.h"
 
 #define NR_WP 32
+#define WP_EXPR_LEN 128
 
 typedef struct watchpoint {
   int NO;
   struct watchpoint *next;
-
-  /* TODO: Add more members if necessary */
+  char expression[WP_EXPR_LEN];
+  word_t old_value;
 
 } WP;
 
@@ -39,5 +40,78 @@ void init_wp_pool() {
   free_ = wp_pool;
 }
 
-/* TODO: Implement the functionality of watchpoint */
+static WP *new_wp(void) {
+  Assert(free_ != NULL, "No free watchpoint");
 
+  WP *wp = free_;
+  free_ = free_->next;
+  wp->next = head;
+  head = wp;
+  return wp;
+}
+
+static void free_wp(WP *wp) {
+  WP **current = &head;
+
+  while (*current != NULL && *current != wp) {
+    current = &(*current)->next;
+  }
+  Assert(*current == wp, "Watchpoint %d is not in use", wp->NO);
+
+  *current = wp->next;
+  wp->next = free_;
+  free_ = wp;
+}
+
+bool wp_add(const char *expression) {
+  bool success = true;
+  word_t value = expr((char *)expression, &success);
+  if (!success) {
+    return false;
+  }
+
+  WP *wp = new_wp();
+  int length = snprintf(wp->expression, sizeof(wp->expression), "%s", expression);
+  Assert(length >= 0 && length < sizeof(wp->expression), "Watchpoint expression is too long");
+  wp->old_value = value;
+
+  printf("Watchpoint %d: %s\n", wp->NO, wp->expression);
+  return true;
+}
+
+bool wp_delete(int number) {
+  for (WP *wp = head; wp != NULL; wp = wp->next) {
+    if (wp->NO == number) {
+      free_wp(wp);
+      return true;
+    }
+  }
+  return false;
+}
+
+void wp_display(void) {
+  printf("Num\tValue\t\tExpression\n");
+  for (WP *wp = head; wp != NULL; wp = wp->next) {
+    printf("%d\t" FMT_WORD "\t%s\n", wp->NO, wp->old_value, wp->expression);
+  }
+}
+
+bool check_wp(void) {
+  bool triggered = false;
+
+  for (WP *wp = head; wp != NULL; wp = wp->next) {
+    bool success = true;
+    word_t new_value = expr(wp->expression, &success);
+    Assert(success, "Watchpoint %d expression is invalid", wp->NO);
+
+    if (new_value != wp->old_value) {
+      printf("Watchpoint %d triggered: %s\n", wp->NO, wp->expression);
+      printf("Old value = " FMT_WORD "\n", wp->old_value);
+      printf("New value = " FMT_WORD "\n", new_value);
+      wp->old_value = new_value;
+      triggered = true;
+    }
+  }
+
+  return triggered;
+}
