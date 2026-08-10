@@ -14,6 +14,7 @@
 ***************************************************************************************/
 
 #include <isa.h>
+#include <memory/vaddr.h>
 
 /* We use the POSIX regex functions to process regular expressions.
  * Type 'man regex' for more information about POSIX regex functions.
@@ -27,6 +28,7 @@ enum {
   TK_AND,
   TK_NUM,
   TK_REG,
+  TK_DEREF,
 
 };
 
@@ -161,8 +163,18 @@ static int precedence(int type) {
     case '-': return 2;
     case '*':
     case '/': return 3;
+
     default: return -1;
   }
+}
+
+static bool is_deref_position(int index) {
+  if (index == 0) {
+    return true;
+  }
+
+  int previous = tokens[index - 1].type;
+  return (previous != TK_NUM) && (previous != TK_REG) && (previous != ')');
 }
 
 static word_t eval(int p, int q, bool *success) {
@@ -187,7 +199,7 @@ static word_t eval(int p, int q, bool *success) {
   }
 
   int op = -1;
-  int min_priority = 100;
+  int min_priority = 9178;
   int depth = 0;
   for (int i = p; i <= q; i++) {
     if (tokens[i].type == '(') {
@@ -213,7 +225,20 @@ static word_t eval(int p, int q, bool *success) {
     }
   }
 
-  if (depth != 0 || op < 0) {
+  if (depth != 0) {
+    *success = false;
+    return 0;
+  }
+
+  if (op < 0) {
+    if (tokens[p].type == TK_DEREF) {
+      word_t address = eval(p + 1, q, success);
+      if (!*success) {
+        return 0;
+      }
+      return vaddr_read((vaddr_t)address, sizeof(word_t));
+    }
+
     *success = false;
     return 0;
   }
@@ -256,6 +281,12 @@ word_t expr(char *e, bool *success) {
   if (nr_token == 0) {
     *success = false;
     return 0;
+  }
+
+  for (int i = 0; i < nr_token; i++) {
+    if (tokens[i].type == '*' && is_deref_position(i)) {
+      tokens[i].type = TK_DEREF;
+    }
   }
 
   *success = true;
