@@ -17,6 +17,10 @@
 #include <cpu/cpu.h>
 #include <readline/readline.h>
 #include <readline/history.h>
+#include <limits.h>
+
+#include <memory/vaddr.h>
+
 #include "sdb.h"
 
 static int is_batch_mode = false;
@@ -49,10 +53,173 @@ static int cmd_c(char *args) {
 
 
 static int cmd_q(char *args) {
+  nemu_state.state = NEMU_QUIT;
   return -1;
 }
 
 static int cmd_help(char *args);
+
+
+//==========================================
+
+static int cmd_si(char *args);
+static int cmd_info(char *args);
+static int cmd_x(char *args);
+static int cmd_p(char *args);
+static int cmd_w(char *args);
+static int cmd_d(char *args);
+
+static int cmd_si(char *args) {
+  uint64_t n = 1;
+
+  if (args != NULL) {
+    char *end = NULL;
+
+    while (*args == ' ' || *args == '\t') {
+      args++;
+    }
+
+    if (*args == '\0' || *args == '-') {
+      printf("Usage: si [N]\n");
+      return 0;
+    }
+
+    n = strtoull(args, &end, 10);
+
+    while (*end == ' ' || *end == '\t') {
+      end++;
+    }
+
+    if (*end != '\0' || n == 0) {
+      printf("Usage: si [N]\n");
+      return 0;
+    }
+  }
+
+  cpu_exec(n);
+  return 0;
+}
+
+static int cmd_info(char *args) {
+  if (args == NULL) {
+    printf("Usage: info r\n");
+    return 0;
+  }
+
+  char *subcmd = strtok(args, " \t");
+
+  if (subcmd != NULL && strcmp(subcmd, "r") == 0) {
+    isa_reg_display();
+  }
+  else if (subcmd != NULL && strcmp(subcmd, "w") == 0) {
+    wp_display();
+  }
+  else {
+    printf("Usage: info r|w\n");
+  }
+
+  return 0;
+}
+
+static int cmd_x(char *args) {
+  if (args == NULL) {
+    printf("Usage: x N EXPR\n");
+    return 0;
+  }
+
+  while (*args == ' ' || *args == '\t') {
+    args++;
+  }
+  char *end = NULL;
+  unsigned long count = strtoul(args, &end, 10);
+  if (end == args || count == 0 || count > UINT_MAX) {
+    printf("Usage: x N EXPR\n");
+    return 0;
+  }
+
+  while (*end == ' ' || *end == '\t') {
+    end++;
+  }
+  if (*end == '\0') {
+    printf("Usage: x N EXPR\n");
+    return 0;
+  }
+
+  bool success = true;
+  vaddr_t addr = (vaddr_t)expr(end, &success);
+  if (!success) {
+    printf("Bad expression.\n");
+    return 0;
+  }
+
+  for (unsigned int i = 0; i < (unsigned int)count; i++) {
+    vaddr_t current = addr + i * 4;
+    word_t data = vaddr_read(current, 4);
+    printf(FMT_WORD ": " FMT_WORD "\n", current, data);
+  }
+
+  return 0;
+}
+
+static int cmd_p(char *args) {
+  if (args == NULL) {
+    printf("Usage: p EXPR\n");
+    return 0;
+  }
+
+  bool success = true;
+  word_t value = expr(args, &success);
+  if (!success) {
+    printf("Bad expression.\n");
+    return 0;
+  }
+
+  printf(FMT_WORD "\n", value);
+  return 0;
+}
+
+static int cmd_w(char *args) {
+  if (args == NULL || *args == '\0') {
+    printf("Usage: w EXPR\n");
+    return 0;
+  }
+
+  if (!wp_add(args)) {
+    printf("Bad expression.\n");
+  }
+  return 0;
+}
+
+static int cmd_d(char *args) {
+  if (args == NULL) {
+    printf("Usage: d N\n");
+    return 0;
+  }
+
+  char *end = NULL;
+  long number = strtol(args, &end, 10);
+  while (*end == ' ' || *end == '\t') {
+    end++;
+  }
+  if (end == args || *end != '\0') {
+    printf("Usage: d N\n");
+    return 0;
+  }
+
+  if (!wp_delete((int)number)) {
+    printf("Watchpoint %ld not found.\n", number);
+  }
+  else {
+    printf("Watchpoint %ld deleted.\n", number);
+  }
+
+  return 0;
+}
+
+
+
+
+//==========================================
 
 static struct {
   const char *name;
@@ -62,6 +229,12 @@ static struct {
   { "help", "Display information about all supported commands", cmd_help },
   { "c", "Continue the execution of the program", cmd_c },
   { "q", "Exit NEMU", cmd_q },
+  { "si", "Step instruction", cmd_si },
+  { "info", "Print program status", cmd_info },
+  { "x", "Examine memory", cmd_x },
+  { "p", "Evaluate expression", cmd_p },
+  { "w", "Set watchpoint", cmd_w },
+  { "d", "Delete watchpoint", cmd_d },
 
   /* TODO: Add more commands */
 
