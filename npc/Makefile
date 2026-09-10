@@ -1,58 +1,39 @@
 TOPNAME = top
-NXDC_FILES = constr/top.nxdc
-INC_PATH ?=
-
 VERILATOR = verilator
-VERILATOR_CFLAGS += -MMD --build -cc \
-				-O3 --x-assign fast --x-initial fast --noassert
+VERILATOR_CFLAGS += --build -cc -O3 \
+	--x-assign fast --x-initial fast --noassert -Wno-fatal
 
 BUILD_DIR = ./build
 OBJ_DIR = $(BUILD_DIR)/obj_dir
-SIM_OBJ_DIR = $(BUILD_DIR)/sim_obj_dir
 BIN = $(BUILD_DIR)/$(TOPNAME)
+
+VSRCS = $(shell find $(abspath ./vsrc) -name "*.sv" -o -name "*.v")
+CSRCS = $(shell find $(abspath ./csrc) -name "*.cpp" -o -name "*.cc" -o -name "*.c")
 
 default: $(BIN)
 
 $(shell mkdir -p $(BUILD_DIR))
 
-# constraint file
-SRC_AUTO_BIND = $(abspath $(BUILD_DIR)/auto_bind.cpp)
-$(SRC_AUTO_BIND): $(NXDC_FILES)
-	python3 $(NVBOARD_HOME)/scripts/auto_pin_bind.py $^ $@
-
-# project source
-VSRCS = $(shell find $(abspath ./vsrc) -name "*.v")
-CSRCS = $(shell find $(abspath ./csrc) -name "*.c" -or -name "*.cc" -or -name "*.cpp")
-CSRCS += $(SRC_AUTO_BIND)
-
-# rules for NVBoard
-include $(NVBOARD_HOME)/scripts/nvboard.mk
-
-# rules for verilator
-INCFLAGS = $(addprefix -I, $(INC_PATH))
-CXXFLAGS += $(INCFLAGS) -DTOP_NAME="\"V$(TOPNAME)\""
-
-$(BIN): $(VSRCS) $(CSRCS) $(NVBOARD_ARCHIVE)
+$(BIN): $(VSRCS) $(CSRCS)
 	@rm -rf $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
-		--top-module $(TOPNAME) $^ \
-		$(addprefix -CFLAGS , $(CXXFLAGS)) $(addprefix -LDFLAGS , $(LDFLAGS)) \
+		--top-module $(TOPNAME) \
+		$(VSRCS) $(CSRCS) \
 		--Mdir $(OBJ_DIR) --exe -o $(abspath $(BIN))
 
 all: default
 
+# IMG is passed by the AM run target (abstract-machine/scripts/platform/npc.mk)
 run: $(BIN)
-	@$^
+	@$(BIN) $(IMG)
 
 sim:
 	$(call git_commit, "sim RTL") # DO NOT REMOVE THIS LINE!!!
-	$(VERILATOR) --binary --timing --trace --top-module scpu_tb \
-		-Wall -Wno-fatal vsrc/scpu.v vsrc/scpu_tb.sv --Mdir $(SIM_OBJ_DIR)
-	@$(SIM_OBJ_DIR)/Vscpu_tb
+	@$(BIN) $(IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)
 
 .PHONY: default all run sim clean
 
-include ../Makefile
+-include ../Makefile

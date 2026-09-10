@@ -17,6 +17,9 @@
 #include <cpu/cpu.h>
 #include <cpu/ifetch.h>
 #include <cpu/decode.h>
+#ifdef CONFIG_FTRACE
+#include <cpu/ftrace.h>
+#endif
 
 #define R(i) gpr(i)
 #define Mr vaddr_read
@@ -75,9 +78,17 @@ static int decode_exec(Decode *s) {
 
   /* ---- RV32I: J-type and I-type jumps ---- */
   INSTPAT("??????? ????? ????? ??? ????? 11011 11", jal   , J,
-      R(rd) = s->snpc; s->dnpc = s->pc + imm);
+      R(rd) = s->snpc; s->dnpc = s->pc + imm;
+      IFDEF(CONFIG_FTRACE,
+        if (rd == 1) trace_call(s->pc, s->dnpc);));
   INSTPAT("??????? ????? ????? 000 ????? 11001 11", jalr  , I,
-      R(rd) = s->snpc; s->dnpc = (src1 + imm) & ~(word_t)1);
+      R(rd) = s->snpc; s->dnpc = (src1 + imm) & ~(word_t)1;
+      IFDEF(CONFIG_FTRACE,
+        int ft_rs1 = BITS(s->isa.inst, 19, 15);
+        /* ret: jalr x0, 0(x1) */
+        if (rd == 0 && ft_rs1 == 1 && imm == 0) trace_ret(s->pc);
+        /* indirect call: jalr ra, rs, imm */
+        else if (rd == 1) trace_call(s->pc, s->dnpc);));
 
   /* ---- RV32I: B-type branches ---- */
   INSTPAT("??????? ????? ????? 000 ????? 11000 11", beq  , B,

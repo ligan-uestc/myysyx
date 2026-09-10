@@ -16,6 +16,7 @@
 #include <cpu/cpu.h>
 #include <cpu/decode.h>
 #include <cpu/difftest.h>
+#include <cpu/iringbuf.h>
 #include <locale.h>
 
 bool check_wp(void);
@@ -75,6 +76,7 @@ static void exec_once(Decode *s, vaddr_t pc) {
   void disassemble(char *str, int size, uint64_t pc, uint8_t *code, int nbyte);
   disassemble(p, s->logbuf + sizeof(s->logbuf) - p,
       MUXDEF(CONFIG_ISA_x86, s->snpc, s->pc), (uint8_t *)&s->isa.inst, ilen);
+  IFDEF(CONFIG_IRINGBUF, iringbuf_record(s->pc, s->logbuf));
 #endif
 }
 
@@ -100,6 +102,7 @@ static void statistic() {
 
 void assert_fail_msg() {
   isa_reg_display();
+  IFDEF(CONFIG_IRINGBUF, iringbuf_dump());
   statistic();
 }
 
@@ -129,6 +132,9 @@ void cpu_exec(uint64_t n) {
            (nemu_state.halt_ret == 0 ? ANSI_FMT("HIT GOOD TRAP", ANSI_FG_GREEN) :
             ANSI_FMT("HIT BAD TRAP", ANSI_FG_RED))),
           nemu_state.halt_pc);
+      IFDEF(CONFIG_IRINGBUF, {
+        if (nemu_state.state == NEMU_ABORT) iringbuf_dump();
+      });
       // fall through
     case NEMU_QUIT: statistic();
   }

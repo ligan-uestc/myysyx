@@ -14,7 +14,12 @@ static const char mainargs[MAINARGS_MAX_LEN] = TOSTRING(MAINARGS_PLACEHOLDER); /
 void putch(char ch) {
 }
 
+static inline void nemu_trap(int code) {
+  asm volatile("mv a0, %0; ebreak" : : "r"(code) : "a0");
+}
+
 void halt(int code) {
+  nemu_trap(code);
   while (1);
 }
 

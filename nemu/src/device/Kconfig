@@ -7,6 +7,22 @@ menuconfig DEVICE
 
 if DEVICE
 
+config DTRACE
+  bool "Enable device tracer"
+  default n
+  help
+    Trace CPU accesses to the device (MMIO/port-IO) address space,
+    including the name of the accessed device map.
+
+config DTRACE_COND
+  depends on DTRACE
+  string "Only trace device accesses when the condition is true"
+  default "true"
+  help
+    A C expression evaluated for every device access inside
+    map_read()/map_write(). The variables addr/len/data/map/cpu.pc
+    are visible, e.g. (addr == 0xa00003f8)
+
 config HAS_PORT_IO
   bool
   default y if ISA_x86

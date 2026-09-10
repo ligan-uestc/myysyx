@@ -1,49 +1,43 @@
-# NPC: sCPU（数列求和处理器）
+# NPC: minirv 处理器（D4）
 
-把 sCPU 作为 NPC 的设计目标：用 RTL 实现一个只支持 sISA 的简单处理器，
-运行 1+2+...+10 的求和程序，并通过 NVBoard 的七段数码管显示计算结果。
+用 RTL（SystemVerilog + Verilator）实现一个模块化的 minirv 处理器。
 
-## sISA 指令集
+## minirv ISA
 
-PC 为 4 位（初值 0），GPR 为 4 个 8 位寄存器。
+- PC 初值为 `0x80000000`（minirv-npc 运行时环境约定；单独仿真时程序也从这里开始）；
+- GPR 数量与 RV32E 一致（16 个，`x0` 恒为 0）；
+- 只支持 8 条指令：`add, addi, lui, lw, lbu, sw, sb, jalr`；
+- 其余编码细节与 RV32I 相同；
+- 额外支持 `ebreak`（AM 的 nemu_trap），用于通知仿真环境结束并携带 `$a0` 退出码。
 
-```
-add    rd, rs1, rs2  | 00 | rd | rs1 | rs2 |  R[rd] = R[rs1] + R[rs2]
-li     rd, imm       | 10 | rd |   imm    |  R[rd] = imm（高位补 0）
-bner0  addr, rs2     | 11 | addr  | rs2   |  if (R[0] != R[rs2]) PC = addr
-out    rs            | 01 | rs |  0000    |  将 R[rs] 以十六进制输出到数码管
-```
+## 目录结构
 
-`out rs` 是讲义 F5 必做题要求添加的指令，这里选用未被占用的操作码 `01`，
-`rs` 位于 `[5:4]`。
-
-## 求和程序
-
-ROM 中内嵌的程序（`vsrc/scpu.v`）：
-
-```
-li r1, 0       # sum = 0
-li r2, 1       # i = 1
-li r3, 1       # step = 1
-li r0, 11      # 循环直到 i == 11
-add r1, r1, r2 # sum += i
-add r2, r2, r3 # i += 1
-bner0 4, r2    # if (R[0] != i) goto 4
-out r1         # 显示结果
-bner0 8, r1    # 停机：原地循环
+```text
+vsrc/top.sv       顶层（clk/rst）
+vsrc/npc_core.sv  核心：IFU/IDU/EXU/LSU/WBU + DPI-C 访存/停机
+vsrc/regfile.sv   16 x 32 通用寄存器组（x0 硬连线为 0）
+csrc/main.cpp     仿真环境：加载镜像、内存模型、时钟驱动、HIT GOOD/BAD TRAP
 ```
 
-计算完成后 R[1] = 55 = 0x37，数码管按十六进制显示为 `37`
-（NVBoard N4 板上 `seg7` 在最左侧，作为高 4 位，`seg6` 作为低 4 位，
-从左到右读作 37）。
+存储器（128 MiB，从 0x80000000 开始）用 C++ 实现：
+
+- `pmem_read(addr)`：返回 `addr & ~3` 处对齐的 4 字节；
+- `pmem_write(addr, data, wmask)`：按字节写掩码写回 4 字节；
+- RTL 通过 DPI-C 调用它们；取指和访存共用这套“总线”接口。
 
 ## 使用
 
-先设置环境变量 `NVBOARD_HOME` 指向 NVBoard 项目路径，然后在 `npc/` 下：
+```bash
+make                 # 编译出 build/top
+make run IMG=xxx.bin # 运行镜像
+make clean
+```
+
+通过 AM 一键运行（见 D4 讲义）：
 
 ```bash
-make           # 编译 NVBoard 目标
-make run       # 打开 NVBoard 窗口运行
-make sim       # 运行 RTL 仿真（对比软件模型，验证结果）
-make clean     # 清理
+export AM_HOME=/home/ligan/ysyx-workbench/abstract-machine
+export NPC_HOME=/home/ligan/ysyx-workbench/npc
+cd /home/ligan/ysyx-workbench/am-kernels/tests/cpu-tests
+make ARCH=minirv-npc ALL=dummy run
 ```
