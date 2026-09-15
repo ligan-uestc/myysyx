@@ -38,7 +38,27 @@ bool cte_init(Context*(*handler)(Event, Context*)) {
 }
 
 Context *kcontext(Area kstack, void (*entry)(void *), void *arg) {
-  return NULL;
+  /* 在 kstack 的栈顶构造一个"即将从 entry(arg) 开始执行"的上下文。
+   *
+   * trap.S 的恢复路径是:
+   *   mv sp, a0            # sp = 要被恢复的上下文
+   *   csrw mstatus/mepc    # 写回 CSR
+   *   MAP(REGS, POP)       # 恢复通用寄存器
+   *   addi sp, sp, CONTEXT_SIZE
+   *   mret                 # PC <- mepc
+   * 所以把上下文放在 "栈顶(16 字节对齐) - CONTEXT_SIZE" 处,
+   * 新的内核线程第一次被恢复时 sp 正好指向栈顶, 且在栈的范围之内。
+   */
+  const int context_size = (NR_REGS + 3) * sizeof(uintptr_t);  // 与 trap.S 的 CONTEXT_SIZE 一致
+  uintptr_t sp_top = (uintptr_t)kstack.end & ~(uintptr_t)0xf;
+  Context *c = (Context *)(sp_top - context_size);
+
+  memset(c, 0, context_size);       // 只清 gpr[] + mcause/mstatus/mepc (不动 pdir)
+  c->mepc    = (uintptr_t)entry;
+  c->mstatus = 0x1800;              // riscv32: MPP = 3 (M-mode), 供 DiffTest 使用
+  c->gpr[10] = (uintptr_t)arg;      // a0: 按 RISC-V 调用约定传递第一个参数
+
+  return c;
 }
 
 void yield() {
