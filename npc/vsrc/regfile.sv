@@ -8,11 +8,12 @@
 // Two register read ports are used by instruction decode; a third read port
 // is used to obtain $a0 (x10) when the program executes ebreak, so that the
 // simulation environment can report HIT GOOD/BAD TRAP.
-module RegFile #(
+module regfile #(
   parameter ADDR_WIDTH = 4,
   parameter DATA_WIDTH = 32
 ) (
   input  logic                    clk,
+  input  logic                    rst,
   input  logic                    wen,
   input  logic [ADDR_WIDTH-1:0]   waddr,
   input  logic [DATA_WIDTH-1:0]   wdata,
@@ -27,7 +28,12 @@ module RegFile #(
   logic [DATA_WIDTH-1:0] rf [0:2**ADDR_WIDTH-1];
 
   always_ff @(posedge clk) begin
-    if (wen && waddr != '0) rf[waddr] <= wdata;
+    if (rst) begin
+      for (int i = 0; i < 2**ADDR_WIDTH; i++) rf[i] <= '0;
+    end
+    else if (wen && waddr != '0) begin
+      rf[waddr] <= wdata;
+    end
   end
 
   assign rdata1 = (raddr1 == '0) ? '0 : rf[raddr1];

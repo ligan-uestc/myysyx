@@ -59,6 +59,36 @@ static void decode_operand(Decode *s, int *rd, word_t *src1, word_t *src2, word_
   }
 }
 
+/* ---- CSRs used by the exception response mechanism (Zicsr, PA3/PA4) ---- */
+#define CSR_MSTATUS 0x300
+#define CSR_MTVEC   0x305
+#define CSR_MEPC    0x341
+#define CSR_MCAUSE  0x342
+#define CSR_SATP    0x180   // for VME (PA4)
+
+static word_t csr_read(uint32_t csrno) {
+  switch (csrno) {
+    case CSR_MSTATUS: return cpu.mstatus;
+    case CSR_MTVEC:   return cpu.mtvec;
+    case CSR_MEPC:    return cpu.mepc;
+    case CSR_MCAUSE:  return cpu.mcause;
+    case CSR_SATP:    return cpu.satp;
+    default: panic("unsupported CSR 0x%x at pc = " FMT_WORD, csrno, cpu.pc);
+  }
+  return 0;
+}
+
+static void csr_write(uint32_t csrno, word_t val) {
+  switch (csrno) {
+    case CSR_MSTATUS: cpu.mstatus = val; break;
+    case CSR_MTVEC:   cpu.mtvec   = val; break;
+    case CSR_MEPC:    cpu.mepc    = val; break;
+    case CSR_MCAUSE:  cpu.mcause  = val; break;
+    case CSR_SATP:    cpu.satp    = val; break;
+    default: panic("unsupported CSR 0x%x at pc = " FMT_WORD, csrno, cpu.pc);
+  }
+}
+
 static int decode_exec(Decode *s) {
   s->dnpc = s->snpc;
 
@@ -172,6 +202,48 @@ static int decode_exec(Decode *s) {
 
   /* ---- RV32I: memory fences are no-ops for NEMU ---- */
   INSTPAT("??????? ????? ????? ??? ????? 00011 11", fence , N, );
+
+  /* ---- Zicsr: csrrw / csrrs / csrrc / csrrwi / csrrsi / csrrci ---- */
+  INSTPAT("??????? ????? ????? 001 ????? 11100 11", csrrw , I,
+      uint32_t csrno = BITS(s->isa.inst, 31, 20);
+      word_t old = csr_read(csrno);
+      csr_write(csrno, src1);
+      R(rd) = old;);
+  INSTPAT("??????? ????? ????? 010 ????? 11100 11", csrrs , I,
+      uint32_t csrno = BITS(s->isa.inst, 31, 20);
+      word_t old = csr_read(csrno);
+      if (BITS(s->isa.inst, 19, 15) != 0) csr_write(csrno, old | src1);
+      R(rd) = old;);
+  INSTPAT("??????? ????? ????? 011 ????? 11100 11", csrrc , I,
+      uint32_t csrno = BITS(s->isa.inst, 31, 20);
+      word_t old = csr_read(csrno);
+      if (BITS(s->isa.inst, 19, 15) != 0) csr_write(csrno, old & ~src1);
+      R(rd) = old;);
+  INSTPAT("??????? ????? ????? 101 ????? 11100 11", csrrwi, I,
+      uint32_t csrno = BITS(s->isa.inst, 31, 20);
+      word_t old = csr_read(csrno);
+      csr_write(csrno, BITS(s->isa.inst, 19, 15));
+      R(rd) = old;);
+  INSTPAT("??????? ????? ????? 110 ????? 11100 11", csrrsi, I,
+      uint32_t csrno = BITS(s->isa.inst, 31, 20);
+      word_t old = csr_read(csrno);
+      if (BITS(s->isa.inst, 19, 15) != 0) csr_write(csrno, old | BITS(s->isa.inst, 19, 15));
+      R(rd) = old;);
+  INSTPAT("??????? ????? ????? 111 ????? 11100 11", csrrci, I,
+      uint32_t csrno = BITS(s->isa.inst, 31, 20);
+      word_t old = csr_read(csrno);
+      if (BITS(s->isa.inst, 19, 15) != 0) csr_write(csrno, old & ~BITS(s->isa.inst, 19, 15));
+      R(rd) = old;);
+
+  /* ---- System: ecall raises an exception, mret returns from it ---- */
+  INSTPAT("0000000 00000 00000 000 00000 11100 11", ecall , N,
+      s->dnpc = isa_raise_intr(11, s->pc));  // 11 = environment call from M-mode
+  INSTPAT("0011000 00010 00000 000 00000 11100 11", mret  , N,
+      /* mstatus: MIE <- MPIE, MPIE <- 1 */
+      cpu.mstatus = (cpu.mstatus & ~(MSTATUS_MIE | MSTATUS_MPIE))
+                  | ((cpu.mstatus & MSTATUS_MPIE) ? MSTATUS_MIE : 0)
+                  | MSTATUS_MPIE;
+      s->dnpc = cpu.mepc;);
 
   /* ---- System: ebreak doubles as the AM nemu_trap ---- */
   INSTPAT("0000000 00001 00000 000 00000 11100 11", ebreak, N, NEMUTRAP(s->pc, R(10))); // R(10) is $a0

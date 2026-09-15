@@ -10,6 +10,14 @@ BIN = $(BUILD_DIR)/$(TOPNAME)
 VSRCS = $(shell find $(abspath ./vsrc) -name "*.sv" -o -name "*.v")
 CSRCS = $(shell find $(abspath ./csrc) -name "*.cpp" -o -name "*.cc" -o -name "*.c")
 
+# itrace/ftrace disassembly: reuse the capstone library shipped with NEMU
+CAPSTONE_HOME = $(abspath $(NPC_HOME)/../nemu/tools/capstone/repo)
+CAPSTONE_CFLAGS = -I$(abspath ./vsrc) -I$(CAPSTONE_HOME)/include
+CAPSTONE_LDFLAGS = -L$(CAPSTONE_HOME) -l:libcapstone.so.5 -Wl,-rpath,$(CAPSTONE_HOME)
+
+IMG ?=
+ARGS ?=
+
 default: $(BIN)
 
 $(shell mkdir -p $(BUILD_DIR))
@@ -17,19 +25,23 @@ $(shell mkdir -p $(BUILD_DIR))
 $(BIN): $(VSRCS) $(CSRCS)
 	@rm -rf $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
+		+incdir+$(abspath ./vsrc) \
+		-CFLAGS "$(CAPSTONE_CFLAGS)" \
+		-LDFLAGS "$(CAPSTONE_LDFLAGS)" \
 		--top-module $(TOPNAME) \
 		$(VSRCS) $(CSRCS) \
 		--Mdir $(OBJ_DIR) --exe -o $(abspath $(BIN))
 
 all: default
 
-# IMG is passed by the AM run target (abstract-machine/scripts/platform/npc.mk)
+# AM (`make ARCH=riscv32e-npc run`) passes IMG/ARGS through
+# abstract-machine/scripts/platform/npc.mk
 run: $(BIN)
-	@$(BIN) $(IMG)
+	@$(BIN) $(ARGS) $(IMG)
 
 sim:
 	$(call git_commit, "sim RTL") # DO NOT REMOVE THIS LINE!!!
-	@$(BIN) $(IMG)
+	@$(BIN) $(ARGS) $(IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)

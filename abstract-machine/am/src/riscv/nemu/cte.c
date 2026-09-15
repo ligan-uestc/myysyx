@@ -8,6 +8,13 @@ Context* __am_irq_handle(Context *c) {
   if (user_handler) {
     Event ev = {0};
     switch (c->mcause) {
+      case 11: // Environment call from M-mode (见 RISC-V 手册的异常号表)
+        // RISC-V 把"异常返回地址要不要 +4"交给软件决定: ecall 属于自陷类
+        // 异常, 返回后应当跳过 ecall 指令本身, 因此这里把 mepc 加 4。
+        // (故障类异常, 例如缺页, 返回时应当重新执行同一条指令, 则不加 4)
+        c->mepc += 4;
+        ev.event = ((intptr_t)c->GPR1 == -1) ? EVENT_YIELD : EVENT_ERROR;
+        break;
       default: ev.event = EVENT_ERROR; break;
     }
 
