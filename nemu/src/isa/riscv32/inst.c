@@ -65,6 +65,14 @@ static void decode_operand(Decode *s, int *rd, word_t *src1, word_t *src2, word_
 #define CSR_MEPC    0x341
 #define CSR_MCAUSE  0x342
 #define CSR_SATP    0x180   // for VME (PA4)
+/* identifier / performance CSRs: the NPC implements these (C5), NEMU provides
+ * the same values so that DiffTest against the NPC stays consistent */
+#define CSR_MCYCLE    0xB00
+#define CSR_MCYCLEH   0xB80
+#define CSR_MVENDORID 0xF11
+#define CSR_MARCHID   0xF12
+
+extern uint64_t g_nr_guest_inst;   // defined in cpu-exec.c
 
 static word_t csr_read(uint32_t csrno) {
   switch (csrno) {
@@ -73,6 +81,10 @@ static word_t csr_read(uint32_t csrno) {
     case CSR_MEPC:    return cpu.mepc;
     case CSR_MCAUSE:  return cpu.mcause;
     case CSR_SATP:    return cpu.satp;
+    case CSR_MCYCLE:    return (word_t)g_nr_guest_inst;
+    case CSR_MCYCLEH:   return (word_t)(g_nr_guest_inst >> 32);
+    case CSR_MVENDORID: return 0x79737978;   // "ysyx"
+    case CSR_MARCHID:   return 0x01504dc0;   // ysyx_22040000 -> 22040000
     default: panic("unsupported CSR 0x%x at pc = " FMT_WORD, csrno, cpu.pc);
   }
   return 0;
@@ -85,6 +97,8 @@ static void csr_write(uint32_t csrno, word_t val) {
     case CSR_MEPC:    cpu.mepc    = val; break;
     case CSR_MCAUSE:  cpu.mcause  = val; break;
     case CSR_SATP:    cpu.satp    = val; break;
+    case CSR_MCYCLE: case CSR_MCYCLEH:               // 只读, 忽略写入
+    case CSR_MVENDORID: case CSR_MARCHID: break;
     default: panic("unsupported CSR 0x%x at pc = " FMT_WORD, csrno, cpu.pc);
   }
 }

@@ -9,8 +9,11 @@ RV32E 指令集，并配有 sdb / trace / DiffTest 三套调试基础设施。
 - GPR = 16 个（RV32E），`x0` 恒为 0；
 - 指令：`lui auipc jal jalr beq bne blt bge bltu bgeu lb lh lw lbu lhu
   sb sh sw addi slti sltiu xori ori andi slli srli srai add sub sll slt
-  sltu xor srl sra or and`，以及 `fence`(空操作)、`ecall`(暂作空操作)、
-  `ebreak`(AM 的 nemu_trap，携带 `$a0` 退出码)；
+  sltu xor srl sra or and`，以及 `fence`(空操作)、`ebreak`(AM 的 nemu_trap，
+  携带 `$a0` 退出码)、`ecall`(自陷异常) 和 `mret`(异常返回)；
+- CSR：`csrrw/csrrs/csrrc/csrrwi/csrrsi/csrrci`；已实例化
+  `mstatus/mtvec/mepc/mcause`、`mcycle/mcycleh`(64 位周期计数器)、
+  `mvendorid`("ysyx" = 0x79737978) 与 `marchid`(学号 22040000)；
 - 不含 M 扩展：乘除法由 AM 的 `riscv/npc/libgcc/*` 软件例程实现。
 
 ## 目录结构
@@ -33,6 +36,9 @@ tools/build-ref.sh 生成 DiffTest 的 REF（riscv32-nemu-interpreter-so）
 
 - `pmem_read(addr)`：返回 `addr & ~3` 处对齐的 4 字节；
 - `pmem_write(addr, data, wmask)`：按字节写掩码写回 4 字节。
+
+另外，写地址 `0xa00003f8` 被当作简化串口（与 NEMU 的串口地址一致），
+写入的字节直接输出到终端，AM 的 `putch()` 就是往这里写。
 
 ## 使用
 

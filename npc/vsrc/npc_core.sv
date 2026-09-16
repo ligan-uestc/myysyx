@@ -7,7 +7,10 @@
 //      lb lh lw lbu lhu   sb sh sw
 //      addi slti sltiu xori ori andi slli srli srai
 //      add sub sll slt sltu xor srl sra or and
-//      fence (nop), ecall (nop), ebreak (AM nemu_trap)
+//      fence (nop), ebreak (AM nemu_trap)
+//      SYSTEM: csrrw/csrrs/csrrc/csrrwi/csrrsi/csrrci, ecall (自陷异常), mret
+//      以及运行 RT-Thread 所需的 CSR: mstatus/mtvec/mepc/mcause,
+//      mcycle/mcycleh (64 位周期计数器), mvendorid/marchid (标识)
 //
 // The datapath follows the modular organization suggested by the lecture:
 //   IFU - program counter + instruction fetch (DPI-C memory)
@@ -45,9 +48,26 @@ module npc_core #(
   import "DPI-C" function void ebreak(input int code);
 
   // write-back source / next-pc source
-  localparam logic [1:0] WB_ALU   = 2'd0, WB_MEM = 2'd1, WB_PC4 = 2'd2;
-  localparam logic [1:0] DNPC_PC4 = 2'd0, DNPC_JAL = 2'd1,
-                         DNPC_JALR = 2'd2, DNPC_BRANCH = 2'd3;
+  localparam logic [1:0] WB_ALU   = 2'd0, WB_MEM = 2'd1, WB_PC4 = 2'd2, WB_CSR = 2'd3;
+  localparam logic [2:0] DNPC_PC4 = 3'd0, DNPC_JAL = 3'd1, DNPC_JALR = 3'd2,
+                         DNPC_BRANCH = 3'd3, DNPC_TRAP = 3'd4, DNPC_MRET = 3'd5;
+
+  // mstatus 中用到的位 (PA3/PA4 只关心中断使能)
+  localparam logic [31:0] MSTATUS_MIE  = 32'h0000_0008;
+  localparam logic [31:0] MSTATUS_MPIE = 32'h0000_0080;
+
+  // 只实例化运行 RT-Thread 需要的 CSR (RISC-V 特权手册编号)
+  localparam logic [11:0] CSR_MSTATUS   = 12'h300,
+                          CSR_MTVEC     = 12'h305,
+                          CSR_MEPC      = 12'h341,
+                          CSR_MCAUSE    = 12'h342,
+                          CSR_MCYCLE    = 12'hB00,   // mcycle 低 32 位
+                          CSR_MCYCLEH   = 12'hB80,   // mcycle 高 32 位
+                          CSR_MVENDORID = 12'hF11,   // 厂商标识
+                          CSR_MARCHID   = 12'hF12;   // 微架构标识
+
+  localparam logic [31:0] MVENDORID_VALUE = 32'h7973_7978;  // "ysyx" 的 ASCII
+  localparam logic [31:0] MARCHID_VALUE   = 32'h0150_4dc0;  // ysyx_22040000 -> 22040000
 
   // ------------------------------------------------------------------
   // IFU: program counter + instruction fetch
@@ -105,11 +125,76 @@ module npc_core #(
   // ------------------------------------------------------------------
   logic [31:0] alu_a, alu_b, alu_y;
   logic [3:0]  alu_op;
-  logic [1:0]  wb_sel, dnpc_sel;
+  logic [1:0]  wb_sel;
+  logic [2:0]  dnpc_sel;
   logic        mem_read, mem_write;
   logic [1:0]  mem_sz;
   logic        is_invalid;
   logic        branch_taken;
+
+  // ---- CSR file ----
+  logic [31:0] csr_mstatus, csr_mtvec, csr_mepc, csr_mcause;
+  logic [63:0] csr_mcycle;      // mcycle 是 64 位计数器, 每周期 +1
+  logic        csr_we;          // CSR 指令写使能
+  logic [11:0] csr_waddr;
+  logic [31:0] csr_wdata;
+  logic [31:0] csr_rdata;       // 读出的旧值 (组合)
+  logic        exc_take;        // ecall: 产生异常
+  logic [31:0] exc_cause, exc_epc;
+  logic        mret_take;       // mret: 从异常返回
+
+  // mcycle: 自由运行的周期计数器
+  always_ff @(posedge clk) begin
+    if (rst) csr_mcycle <= 64'd0;
+    else     csr_mcycle <= csr_mcycle + 64'd1;
+  end
+
+  // CSR 读 (组合)
+  always_comb begin
+    case (inst[31:20])
+      CSR_MSTATUS:   csr_rdata = csr_mstatus;
+      CSR_MTVEC:     csr_rdata = csr_mtvec;
+      CSR_MEPC:      csr_rdata = csr_mepc;
+      CSR_MCAUSE:    csr_rdata = csr_mcause;
+      CSR_MCYCLE:    csr_rdata = csr_mcycle[31:0];
+      CSR_MCYCLEH:   csr_rdata = csr_mcycle[63:32];
+      CSR_MVENDORID: csr_rdata = MVENDORID_VALUE;
+      CSR_MARCHID:   csr_rdata = MARCHID_VALUE;
+      default:       csr_rdata = 32'h0;   // 未实例化的 CSR 读出 0
+    endcase
+  end
+
+  // CSR 写 + 异常/返回时对 mstatus 的更新
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      csr_mstatus <= 32'd0;
+      csr_mtvec   <= 32'd0;
+      csr_mepc    <= 32'd0;
+      csr_mcause  <= 32'd0;
+    end
+    else begin
+      if (csr_we) begin
+        case (csr_waddr)
+          CSR_MSTATUS: csr_mstatus <= csr_wdata;
+          CSR_MTVEC:   csr_mtvec   <= csr_wdata;
+          CSR_MEPC:    csr_mepc    <= csr_wdata;
+          CSR_MCAUSE:  csr_mcause  <= csr_wdata;
+          default: ;   // mvendorid/marchid 只读, mcycle 由硬件维护
+        endcase
+      end
+      if (exc_take) begin        // 响应异常: 记录现场, MPIE <- MIE, MIE <- 0
+        csr_mcause  <= exc_cause;
+        csr_mepc    <= exc_epc;
+        csr_mstatus <= (csr_mstatus & ~(MSTATUS_MIE | MSTATUS_MPIE))
+                     | (((csr_mstatus & MSTATUS_MIE) != 32'd0) ? MSTATUS_MPIE : 32'd0);
+      end
+      if (mret_take) begin       // 返回: MIE <- MPIE, MPIE <- 1
+        csr_mstatus <= (csr_mstatus & ~(MSTATUS_MIE | MSTATUS_MPIE))
+                     | (((csr_mstatus & MSTATUS_MPIE) != 32'd0) ? MSTATUS_MIE : 32'd0)
+                     | MSTATUS_MPIE;
+      end
+    end
+  end
 
   alu u_alu (.a(alu_a), .b(alu_b), .op(alu_op), .y(alu_y));
 
@@ -126,6 +211,13 @@ module npc_core #(
     mem_write  = 1'b0;
     mem_sz     = 2'd2;
     is_invalid = 1'b0;
+    csr_we     = 1'b0;
+    csr_waddr  = inst[31:20];
+    csr_wdata  = 32'b0;
+    exc_take   = 1'b0;
+    exc_cause  = 32'b0;
+    exc_epc    = pc;
+    mret_take  = 1'b0;
 
     if (!rst) begin
       case (opcode)
@@ -221,9 +313,42 @@ module npc_core #(
         end
         7'b0001111: begin                       // fence: no-op in this simple NPC
         end
-        7'b1110011: begin
-          if (inst == 32'h0010_0073) is_ebreak = 1'b1;        // ebreak = nemu_trap
-          else if (inst != 32'h0000_0073) is_invalid = 1'b1;  // ecall: no-op (no CSR yet)
+        7'b1110011: begin                       // SYSTEM: CSR / ecall / ebreak / mret
+          case (funct3)
+            3'b000: begin
+              if (inst == 32'h0010_0073) is_ebreak = 1'b1;        // ebreak = nemu_trap
+              else if (inst == 32'h0000_0073) begin               // ecall: 自陷异常
+                exc_take  = 1'b1;
+                exc_cause = 32'd11;                               // Environment call from M-mode
+                exc_epc   = pc;
+                dnpc_sel  = DNPC_TRAP;
+              end
+              else if (inst == 32'h3020_0073) begin               // mret
+                mret_take = 1'b1;
+                dnpc_sel  = DNPC_MRET;
+              end
+              else is_invalid = 1'b1;
+            end
+            3'b001, 3'b010, 3'b011: begin       // csrrw / csrrs / csrrc
+              rf_we     = 1'b1;
+              wb_sel    = WB_CSR;
+              csr_waddr = inst[31:20];
+              csr_we    = (funct3 == 3'b001) || (rs1 != 4'd0);
+              csr_wdata = (funct3 == 3'b001) ? rv1
+                        : (funct3 == 3'b010) ? (csr_rdata | rv1)
+                        :                      (csr_rdata & ~rv1);
+            end
+            3'b101, 3'b110, 3'b111: begin       // csrrwi / csrrsi / csrrci
+              rf_we     = 1'b1;
+              wb_sel    = WB_CSR;
+              csr_waddr = inst[31:20];
+              csr_we    = (funct3 == 3'b101) || (inst[19:15] != 5'd0);
+              csr_wdata = (funct3 == 3'b101) ? {27'b0, inst[19:15]}
+                        : (funct3 == 3'b110) ? (csr_rdata | {27'b0, inst[19:15]})
+                        :                      (csr_rdata & ~{27'b0, inst[19:15]});
+            end
+            default: is_invalid = 1'b1;
+          endcase
         end
         default: is_invalid = 1'b1;
       endcase
@@ -304,6 +429,7 @@ module npc_core #(
     case (wb_sel)
       WB_PC4:  rf_wd = pc + 4;
       WB_MEM:  rf_wd = mem_rdata;
+      WB_CSR:  rf_wd = csr_rdata;   // CSR 指令写回读到的旧值
       default: rf_wd = alu_y;
     endcase
   end
@@ -316,6 +442,8 @@ module npc_core #(
       DNPC_JAL:    next_pc = pc + imm_j;
       DNPC_JALR:   next_pc = alu_y & 32'hffff_fffe;
       DNPC_BRANCH: next_pc = branch_taken ? (pc + imm_b) : (pc + 4);
+      DNPC_TRAP:   next_pc = csr_mtvec;   // ecall -> 异常入口
+      DNPC_MRET:   next_pc = csr_mepc;    // mret -> 异常返回
       default:     next_pc = pc + 4;
     endcase
   end

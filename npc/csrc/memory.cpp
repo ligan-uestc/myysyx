@@ -12,19 +12,31 @@ static uint8_t pmem[PMEM_SIZE];
 static bool    s_stop = false;
 static int     s_trap = 0;
 
+// 简化的串口设备: AM 的 putch() 往这个地址写一个字节, 仿真环境把它打到 stdout.
+// 地址与 NEMU 的 SERIAL_PORT 保持一致, 方便复用同一套 AM 代码.
+static const uint32_t SERIAL_ADDR = 0xa00003f8u;
+
 static inline uint32_t pmem_off(uint32_t addr) {
   return (addr - PMEM_BASE) & (PMEM_SIZE - 1);
 }
 
 extern "C" int pmem_read(int raddr) {
-  uint32_t addr = (uint32_t)raddr & ~0x3u;
+  uint32_t raw = (uint32_t)raddr;
+  if (raw == SERIAL_ADDR) { return 0; }   // 串口只写
+  uint32_t addr = raw & ~0x3u;
   uint32_t data;
   memcpy(&data, &pmem[pmem_off(addr)], sizeof(data));
   return (int)data;
 }
 
 extern "C" void pmem_write(int waddr, int wdata, char wmask) {
-  uint32_t addr = (uint32_t)waddr & ~0x3u;
+  uint32_t raw = (uint32_t)waddr;
+  if (raw == SERIAL_ADDR) {
+    putchar((int)((uint32_t)wdata & 0xffu));
+    fflush(stdout);
+    return;
+  }
+  uint32_t addr = raw & ~0x3u;
   uint32_t off  = pmem_off(addr);
   uint8_t  mask = (uint8_t)wmask;
   for (int i = 0; i < 4; i ++) {

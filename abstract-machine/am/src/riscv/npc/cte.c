@@ -8,6 +8,12 @@ Context* __am_irq_handle(Context *c) {
   if (user_handler) {
     Event ev = {0};
     switch (c->mcause) {
+      case 11: // Environment call from M-mode: NPC 目前只支持 ecall 这一种异常
+        // RISC-V 把"异常返回地址要不要 +4"交给软件决定: ecall 属于自陷类
+        // 异常, 返回后应当跳过 ecall 本身, 因此这里把 mepc 加 4。
+        c->mepc += 4;
+        ev.event = ((intptr_t)c->GPR1 == -1) ? EVENT_YIELD : EVENT_ERROR;
+        break;
       default: ev.event = EVENT_ERROR; break;
     }
 
@@ -31,7 +37,21 @@ bool cte_init(Context*(*handler)(Event, Context*)) {
 }
 
 Context *kcontext(Area kstack, void (*entry)(void *), void *arg) {
-  return NULL;
+  /* 在 kstack 的栈顶构造一个"即将从 entry(arg) 开始执行"的上下文。
+   * trap.S 的恢复路径最后会执行 addi sp, sp, CONTEXT_SIZE,
+   * 因此把上下文放在 "栈顶(16 字节对齐) - CONTEXT_SIZE" 处,
+   * 新线程第一次被恢复时 sp 正好指向栈顶。
+   */
+  const int context_size = (NR_REGS + 3) * sizeof(uintptr_t);  // 与 trap.S 的 CONTEXT_SIZE 一致
+  uintptr_t sp_top = (uintptr_t)kstack.end & ~(uintptr_t)0xf;
+  Context *c = (Context *)(sp_top - context_size);
+
+  memset(c, 0, context_size);       // 只清 gpr[] + mcause/mstatus/mepc (不动 pdir)
+  c->mepc    = (uintptr_t)entry;
+  c->mstatus = 0x1800;              // riscv32: MPP = 3 (M-mode)
+  c->gpr[10] = (uintptr_t)arg;      // a0: 按 RISC-V 调用约定传递第一个参数
+
+  return c;
 }
 
 void yield() {

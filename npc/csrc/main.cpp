@@ -77,12 +77,20 @@ void sim_step() {
   // 3) observe the retired instruction (itrace/mtrace/ftrace)
   trace_observe(pc, inst, next_pc, mv, mwe, maddr, mdata, msize);
 
-  // 4) Differential Testing (the final ebreak is not executed in the REF,
-  //    whose PC convention after nemu_trap differs from the NPC)
+  // 4) Differential Testing
+  //    * 最后一条 ebreak 不比对: NPC 在 ebreak 处冻结 PC, 而 NEMU 的
+  //      nemu_trap 会把 PC 置为 pc+4, 两者约定不同;
+  //    * 访问设备的指令 (地址不在 REF 的内存范围内, 例如串口输出) 无法在
+  //      REF 上执行, 采用 skip 策略: 用 DUT 的状态重新同步 REF
+  //      (与 NEMU difftest_skip_ref() 的思路一致)。
   if (inst != EBREAK_INST) {
     uint32_t gpr[N_GPR];
     collect_gpr(gpr);
-    if (!difftest_check(gpr, next_pc)) {
+    bool is_device_access = mv && (maddr < PMEM_BASE || maddr >= PMEM_BASE + PMEM_SIZE);
+    if (is_device_access) {
+      difftest_sync_regs(gpr, next_pc);
+    }
+    else if (!difftest_check(gpr, next_pc)) {
       npc_stop(-2);   // difftest mismatch
     }
   }
