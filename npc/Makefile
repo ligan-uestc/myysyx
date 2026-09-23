@@ -17,6 +17,9 @@ CAPSTONE_LDFLAGS = -L$(CAPSTONE_HOME) -l:libcapstone.so.5 -Wl,-rpath,$(CAPSTONE_
 
 IMG ?=
 ARGS ?=
+# 存储器随机延迟 (LFSR) 开关: make RAND_DELAY=1 打开, 用于总线压力测试
+RAND_DELAY ?= 0
+VERILATOR_CFLAGS += -GRAND_DELAY=$(RAND_DELAY)
 
 default: $(BIN)
 

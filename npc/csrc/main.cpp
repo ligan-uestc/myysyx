@@ -27,9 +27,10 @@
 #include <getopt.h>
 
 static Vtop     top;
-static uint64_t g_nr_inst = 0;
+static uint64_t g_nr_inst = 0;      // 已完成的指令数
+static uint64_t g_nr_cycles = 0;    // 时钟周期数
 static bool     g_print_step = false;
-static uint64_t g_max_inst = 100000000ull;
+static uint64_t g_max_inst = 100000000ull;   // 周期数上限 (防止死循环)
 
 // ---------------------------------------------------------------------------
 // simulation control
@@ -48,33 +49,36 @@ void sim_reset(int n) {
   top.clk = 0; top.eval();   // settle the first instruction
 }
 
-void sim_step() {
-  // 1) combinational phase: the instruction at the current PC is decoded
-  //    (the RTL fetches it from the DPI-C memory), and load/store + ebreak
-  //    are evaluated.
+// 执行一个时钟周期; 返回本周期是否有一条指令完成 (retire)
+static bool sim_cycle() {
+  // 1) 组合相: 观察当前周期的状态
   top.clk = 0;
   top.eval();
 
   uint32_t pc    = (uint32_t)top.pc;
   uint32_t inst  = (uint32_t)top.inst;
+  bool     done  = top.inst_done;
   bool     mv    = top.mem_valid;
   bool     mwe   = top.mem_we;
   uint32_t maddr = (uint32_t)top.mem_addr;
   uint32_t mdata = mwe ? (uint32_t)top.mem_wdata : (uint32_t)top.mem_rdata;
   uint32_t msize = (uint32_t)top.mem_size;
 
-  if (g_print_step) {
+  if (g_print_step && done) {
     std::string text = trace_disasm(pc, inst);
     printf("0x%08x: %08x  %s\n", pc, inst, text.c_str());
   }
 
-  // 2) clock edge: commit (PC / GPR update)
+  // 2) 时钟沿: 提交 (PC / 通用寄存器 / CSR 的更新)
   top.clk = 1;
   top.eval();
+  g_nr_cycles ++;
+
+  if (!done) { return false; }
   g_nr_inst ++;
   uint32_t next_pc = (uint32_t)top.pc;
 
-  // 3) observe the retired instruction (itrace/mtrace/ftrace)
+  // 3) 指令完成: itrace/mtrace/ftrace
   trace_observe(pc, inst, next_pc, mv, mwe, maddr, mdata, msize);
 
   // 4) Differential Testing
@@ -94,11 +98,19 @@ void sim_step() {
       npc_stop(-2);   // difftest mismatch
     }
   }
+  return true;
+}
+
+// 执行一条指令 (多周期处理器需要若干个时钟周期)
+void sim_step() {
+  while (!npc_stopped() && g_nr_cycles < g_max_inst) {
+    if (sim_cycle()) { break; }
+  }
 }
 
 void sim_run(long n) {
   g_print_step = (n >= 0 && n < 10);
-  while (!npc_stopped() && n != 0 && g_nr_inst < g_max_inst) {
+  while (!npc_stopped() && n != 0 && g_nr_cycles < g_max_inst) {
     sim_step();
     if (n > 0) { n --; }
   }
@@ -113,23 +125,24 @@ void     sim_set_print_step(bool on) { g_print_step = on; }
 void     sim_set_max_inst(uint64_t n) { g_max_inst = n; }
 
 void sim_report_result() {
+  double ipc = (g_nr_cycles != 0) ? ((double)g_nr_inst / (double)g_nr_cycles) : 0.0;
   if (!npc_stopped()) {
-    printf("nemu: TIME OUT after %llu instructions\n",
-        (unsigned long long)g_nr_inst);
+    printf("nemu: TIME OUT after %llu instructions (%llu cycles, IPC = %.3f)\n",
+        (unsigned long long)g_nr_inst, (unsigned long long)g_nr_cycles, ipc);
     return;
   }
   int code = npc_trap_code();
   if (code == -2) {
-    printf("nemu: HIT BAD TRAP (DiffTest mismatch) at pc = 0x%08x, inst = %llu\n",
-        sim_pc(), (unsigned long long)g_nr_inst);
+    printf("nemu: HIT BAD TRAP (DiffTest mismatch) at pc = 0x%08x, inst = %llu (%llu cycles, IPC = %.3f)\n",
+        sim_pc(), (unsigned long long)g_nr_inst, (unsigned long long)g_nr_cycles, ipc);
   }
   else if (code == 0) {
-    printf("nemu: HIT GOOD TRAP at pc = 0x%08x, inst = %llu\n",
-        sim_pc(), (unsigned long long)g_nr_inst);
+    printf("nemu: HIT GOOD TRAP at pc = 0x%08x, inst = %llu (%llu cycles, IPC = %.3f)\n",
+        sim_pc(), (unsigned long long)g_nr_inst, (unsigned long long)g_nr_cycles, ipc);
   }
   else {
-    printf("nemu: HIT BAD TRAP (code = %d) at pc = 0x%08x, inst = %llu\n",
-        code, sim_pc(), (unsigned long long)g_nr_inst);
+    printf("nemu: HIT BAD TRAP (code = %d) at pc = 0x%08x, inst = %llu (%llu cycles, IPC = %.3f)\n",
+        code, sim_pc(), (unsigned long long)g_nr_inst, (unsigned long long)g_nr_cycles, ipc);
   }
 }
 
@@ -187,6 +200,7 @@ int main(int argc, char *argv[]) {
     }
   }
   if (img_file == nullptr) { usage(argv[0]); return 1; }
+
 
   // ---- load the program image into the physical memory ----
   size_t img_size = 0;
