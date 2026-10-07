@@ -1,5 +1,17 @@
 # NPC: RV32E 处理器（C2/D4/B1/B2）
 
+> **B4 更新**：加入性能计数器与简易 icache。
+> * `vsrc/icache.sv`：可配置的直接映射 icache（块大小/块数可调；只有存储器
+>   类型的地址走 cache，SRAM 与设备旁路）；命中当拍返回，不额外增加取指周期；
+> * `fence.i`：按讲义方案 (3) 冲刷整个 icache；
+> * 性能计数器（`PERF=1`）：IPC、IFU/LSU/EXU 事件、指令类别、icache 命中/缺失、
+>   AMAT 相关数据，`make perf` 直接打印成表（见 `tools/perf_report.py`）；
+> * `tools/cachesim/`：cache 模拟器，可对 icache 做**性能测试的 DiffTest**
+>   （命中/缺失次数与 RTL 完全一致），并支持并行设计空间探索（`dse.py`）；
+> * `tests/{smc.c,loader.c}`：复现"自修改代码"与"加载器"导致的缓存一致性问题。
+>
+> 详见 `lecture/B4_性能优化和简易缓存_完成过程.md`。
+
 > **B2 更新**：NPC 已经接入 ysyxSoC。
 > * 访存接口从 AXI4-Lite 扩展为**完整 AXI4**（`vsrc/axi4_if.sv`，带
 >   `id/len/size/burst/last`；`arsize/awsize` 由访存指令的宽度决定）；

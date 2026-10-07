@@ -16,8 +16,26 @@
 // ============================================================================
 `include "alu_ops.svh"
 
+// B4: icache 的可配置参数 (可用 verilator 的 +define+ 覆盖, 便于设计空间探索)
+//   NPC_ICACHE_BLOCK  : 块大小 (字节)
+//   NPC_ICACHE_BLOCKS : cache 块数
+//   NPC_ICACHE_SRAM   : 是否缓存 SRAM (0/1, 仅用于缓存一致性实验)
+`ifndef NPC_ICACHE_BLOCK
+`define NPC_ICACHE_BLOCK 4
+`endif
+`ifndef NPC_ICACHE_BLOCKS
+`define NPC_ICACHE_BLOCKS 16
+`endif
+`ifndef NPC_ICACHE_SRAM
+`define NPC_ICACHE_SRAM 0
+`endif
+
 module npc_core #(
-  parameter logic [31:0] PC_INIT = 32'h8000_0000
+  parameter logic [31:0] PC_INIT = 32'h8000_0000,
+  // B4: icache 参数 (可配置, 便于设计空间探索)
+  parameter int  ICACHE_BLOCK  = `NPC_ICACHE_BLOCK,   // 块大小 (字节)
+  parameter int  ICACHE_BLOCKS = `NPC_ICACHE_BLOCKS,  // cache 块数
+  parameter bit  ICACHE_SRAM   = `NPC_ICACHE_SRAM     // 是否缓存 SRAM (一致性实验)
 ) (
   input  logic clk,
   input  logic rst,
@@ -33,7 +51,7 @@ module npc_core #(
   output logic [31:0] mem_wdata,
   output logic [31:0] mem_rdata,
   // ---- AXI4 master (B2: 由 AXI4-Lite 扩展而来) ----
-  axi4_if.master      ifu_axi,     // 取指
+  axi4_if.master      ifu_mem,     // 取指 (经 icache 之后连到总线)
   axi4_if.master      lsu_axi,     // 访存
   output logic [2:0]  state_dbg    // (调试) 状态机
 );
@@ -158,6 +176,7 @@ module npc_core #(
   logic        ex_mem_read, ex_mem_write;
   logic [1:0]  ex_mem_size;
   logic        ex_ebreak, ex_ecall, ex_mret, ex_invalid;
+  logic        ex_fence_i;      // B4: fence.i (冲刷 icache)
   logic        ex_rf_we;
   logic        csr_we;
   logic [11:0] csr_waddr;
@@ -181,6 +200,7 @@ module npc_core #(
     ex_ebreak    = 1'b0;
     ex_ecall     = 1'b0;
     ex_mret      = 1'b0;
+    ex_fence_i   = 1'b0;
     ex_invalid   = 1'b0;
     ex_rf_we     = 1'b0;
     csr_we       = 1'b0;
@@ -283,7 +303,11 @@ module npc_core #(
           3'b111: alu_op = `ALU_AND;
         endcase
       end
-      7'b0001111: begin                       // fence: nop
+      7'b0001111: begin                       // fence / fence.i
+        // fence.i: "让之后的取指都能看到之前的 store 修改的数据"。
+        // 这里采用讲义的方案 (3): 执行 fence.i 时冲刷整个 icache,
+        // 之后的取指必定缺失, 从而从存储器取到新数据。
+        if (funct3 == 3'b001) ex_fence_i = 1'b1;
       end
       7'b1110011: begin                       // SYSTEM
         case (funct3)
@@ -405,9 +429,16 @@ module npc_core #(
     end
     else begin
       unique case (st)
-        S_FETCH_AR: if (ifu_axi.arvalid && ifu_axi.arready) st <= S_FETCH_R;
-        S_FETCH_R:  if (ifu_axi.rvalid && ifu_axi.rready) begin
-          inst_q <= ifu_axi.rdata;
+        S_FETCH_AR: begin
+          // 命中时 icache 当拍就给出数据, 此时只需要 1 个周期
+          if (ifu_resp_valid) begin
+            inst_q <= ifu_resp_data;
+            st     <= S_EXEC;
+          end
+          else if (ifu_req_valid && ifu_req_ready) st <= S_FETCH_R;
+        end
+        S_FETCH_R:  if (ifu_resp_valid) begin
+          inst_q <= ifu_resp_data;
           st     <= S_EXEC;
         end
         S_EXEC: begin
@@ -456,32 +487,44 @@ module npc_core #(
   end
 
   // ------------------------------------------------------------------
-  // AXI4: IFU (只读)
+  // IFU <-> icache (B4 讲义 "简易指令缓存")
   //
-  // 取指固定访问 4 字节, 因此 arsize=2 (2^2=4)、单拍 (arlen=0)、INCR。
-  // ------------------------------------------------------------------
-  assign ifu_axi.arid    = 4'd0;
-  assign ifu_axi.arlen   = 8'd0;
-  assign ifu_axi.arsize  = 3'd2;
-  assign ifu_axi.arburst = 2'b01;   // INCR
+  // 取指请求先发给 icache: 命中则很快返回, 缺失则 icache 通过 AXI4 从存储器
+  // 读出整个 cache 块再返回。只有存储器类型的地址才会走 cache, 设备访问由
+  // icache 直接旁路 (讲义 "适合缓存的地址空间")。
+  //
   // 注意: 在 ysyxSoC 中 CPU 的复位会被刻意延迟 10 个周期 (等 ChipLink 初始化),
-  // 如果复位期间仍然驱动 arvalid, 设备会在 CPU 还在复位时就完成一次请求,
-  // 之后 CPU 复位结束却等不到第二次 arready, 造成死锁。因此这里用 !rst 屏蔽。
-  assign ifu_axi.arvalid = (st == S_FETCH_AR) && !rst;
-  assign ifu_axi.araddr  = pc_q;
-  assign ifu_axi.rready  = (st == S_FETCH_R) && !rst;
-  // IFU 不写存储器, 写通道全部置 0 (讲义要求)
-  assign ifu_axi.awid    = 4'd0;
-  assign ifu_axi.awlen   = 8'd0;
-  assign ifu_axi.awsize  = 3'd2;
-  assign ifu_axi.awburst = 2'b01;
-  assign ifu_axi.awvalid = 1'b0;
-  assign ifu_axi.awaddr  = 32'b0;
-  assign ifu_axi.wvalid  = 1'b0;
-  assign ifu_axi.wdata   = 32'b0;
-  assign ifu_axi.wstrb   = 4'b0;
-  assign ifu_axi.wlast   = 1'b1;
-  assign ifu_axi.bready  = 1'b0;
+  // 复位期间不能驱动任何请求, 否则设备会在 CPU 还在复位时就完成一次请求,
+  // 之后 CPU 复位结束却等不到第二次握手, 造成死锁。
+  // ------------------------------------------------------------------
+  logic        ifu_req_valid, ifu_req_ready, ifu_resp_valid, icache_flush;
+  logic [31:0] ifu_req_addr, ifu_resp_data;
+  logic        ic_hit, ic_miss, ic_bypass;
+  logic [31:0] ic_miss_len;
+
+  assign ifu_req_valid = (st == S_FETCH_AR || st == S_FETCH_R) && !rst;
+  assign ifu_req_addr  = pc_q;
+  assign icache_flush  = ex_fence_i && (st == S_EXEC) && !rst;
+
+  icache #(
+    .BLOCK_BYTES (ICACHE_BLOCK),
+    .NBLOCKS     (ICACHE_BLOCKS),
+    .CACHE_SRAM  (ICACHE_SRAM)
+  ) u_icache (
+    .clk        (clk),
+    .rst        (rst),
+    .req_valid  (ifu_req_valid),
+    .req_ready  (ifu_req_ready),
+    .req_addr   (ifu_req_addr),
+    .resp_valid (ifu_resp_valid),
+    .resp_data  (ifu_resp_data),
+    .flush      (icache_flush),
+    .ev_hit     (ic_hit),
+    .ev_miss    (ic_miss),
+    .ev_bypass  (ic_bypass),
+    .miss_len   (ic_miss_len),
+    .mem        (ifu_mem)
+  );
 
   // ------------------------------------------------------------------
   // AXI4: LSU (读 + 写)
@@ -576,4 +619,117 @@ module npc_core #(
       else if (ex_invalid) ebreak(-1);
     end
   end
+
+`ifdef NPC_PERF
+  // ==================================================================
+  // 性能计数器 (B4 讲义 "性能事件和性能计数器")
+  //
+  // 讲义允许把性能事件通过 DPI-C 接到仿真环境, 或者在仿真结束时用
+  // $display() 输出; 并且不要求它们参与流片。这里用 `ifdef NPC_PERF`
+  // 包起来: 打开时在仿真结束时打印一行 PERF 统计, 综合时不实例化。
+  // ==================================================================
+  logic [63:0] pf_cyc, pf_inst, pf_ifu, pf_ifu_stall_req, pf_ifu_stall_mem;
+  logic [63:0] pf_ld, pf_st, pf_lsu_cyc, pf_exu;
+  logic [63:0] pf_alu, pf_load, pf_store, pf_branch, pf_jump, pf_csr, pf_sys;
+  logic [63:0] pf_ic_hit, pf_ic_miss, pf_ic_bypass, pf_ic_miss_cyc;
+  // 每类指令各自花费的周期数 (两次 retire 之间的周期数), 用于算"平均执行周期"
+  logic [63:0] pf_c_alu, pf_c_load, pf_c_store, pf_c_branch, pf_c_jump, pf_c_csr, pf_c_sys;
+  logic [63:0] pf_cyc_last;
+  logic        pf_reported, pf_report_pending;
+
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      pf_cyc <= '0; pf_inst <= '0; pf_ifu <= '0;
+      pf_ifu_stall_req <= '0; pf_ifu_stall_mem <= '0;
+      pf_ld <= '0; pf_st <= '0; pf_lsu_cyc <= '0; pf_exu <= '0;
+      pf_alu <= '0; pf_load <= '0; pf_store <= '0;
+      pf_branch <= '0; pf_jump <= '0; pf_csr <= '0; pf_sys <= '0;
+      pf_ic_hit <= '0; pf_ic_miss <= '0; pf_ic_bypass <= '0; pf_ic_miss_cyc <= '0;
+      pf_c_alu <= '0; pf_c_load <= '0; pf_c_store <= '0; pf_c_branch <= '0;
+      pf_c_jump <= '0; pf_c_csr <= '0; pf_c_sys <= '0; pf_cyc_last <= '0;
+    end
+    else begin
+      pf_cyc <= pf_cyc + 64'd1;
+
+      // ---- 前端: 指令供给 ----
+      if (ifu_resp_valid)                    pf_ifu <= pf_ifu + 64'd1;   // IFU 取到指令
+      // IFU 取不到指令的两类原因:
+      //   stall_req: 停在 S_FETCH_AR 还拿不到指令 (icache 正忙/上一个请求未完成)
+      //   stall_mem: 请求已发出, 停在 S_FETCH_R 等待回复 (icache 缺失)
+      if ((st == S_FETCH_AR) && !ifu_resp_valid) pf_ifu_stall_req <= pf_ifu_stall_req + 64'd1;
+      if ((st == S_FETCH_R)  && !ifu_resp_valid) pf_ifu_stall_mem <= pf_ifu_stall_mem + 64'd1;
+
+      // ---- icache ----
+      if (ic_hit)    pf_ic_hit  <= pf_ic_hit  + 64'd1;
+      if (ic_miss) begin
+        pf_ic_miss <= pf_ic_miss + 64'd1;
+        pf_ic_miss_cyc <= pf_ic_miss_cyc + {32'd0, ic_miss_len};
+      end
+      if (ic_bypass) pf_ic_bypass <= pf_ic_bypass + 64'd1;
+
+      // ---- 后端: 数据供给与计算效率 ----
+      if (retire_d)  pf_inst <= pf_inst + 64'd1;              // 动态指令数
+      if (ld_fire)   pf_ld   <= pf_ld + 64'd1;                // LSU 取到数据
+      if (st_fire)   pf_st   <= pf_st + 64'd1;                // LSU 完成写入
+      if (st == S_LD_AR || st == S_LD_R) pf_lsu_cyc <= pf_lsu_cyc + 64'd1;
+      if (ex_done)   pf_exu  <= pf_exu + 64'd1;               // EXU 完成计算
+
+      // ---- 每条指令花费的周期数 (按所属类别归集) ----
+      if (retire_d) begin
+        logic [63:0] delta;
+        delta = pf_cyc - pf_cyc_last;
+        pf_cyc_last <= pf_cyc;
+        unique case (opcode)
+          7'b0110111, 7'b0010111, 7'b0010011, 7'b0110011: pf_c_alu    <= pf_c_alu    + delta;
+          7'b0000011:                                    pf_c_load   <= pf_c_load   + delta;
+          7'b0100011:                                    pf_c_store  <= pf_c_store  + delta;
+          7'b1100011:                                    pf_c_branch <= pf_c_branch + delta;
+          7'b1101111, 7'b1100111:                        pf_c_jump   <= pf_c_jump   + delta;
+          7'b1110011: begin
+            if (funct3 == 3'b000) pf_c_sys <= pf_c_sys + delta;
+            else                  pf_c_csr <= pf_c_csr + delta;
+          end
+          default: ;
+        endcase
+      end
+
+      // ---- 指令类别 (在 S_EXEC 译码的那一拍统计) ----
+      if (st == S_EXEC && !rst) begin
+        unique case (opcode)
+          7'b0110111, 7'b0010111, 7'b0010011, 7'b0110011: pf_alu    <= pf_alu    + 64'd1;
+          7'b0000011:                                    pf_load   <= pf_load   + 64'd1;
+          7'b0100011:                                    pf_store  <= pf_store  + 64'd1;
+          7'b1100011:                                    pf_branch <= pf_branch + 64'd1;
+          7'b1101111, 7'b1100111:                        pf_jump   <= pf_jump   + 64'd1;
+          7'b1110011: begin
+            if (funct3 == 3'b000) pf_sys <= pf_sys + 64'd1;
+            else                  pf_csr <= pf_csr + 64'd1;
+          end
+          default: ;   // fence / fence.i 等不计入上述类别
+        endcase
+      end
+    end
+  end
+
+  // 退休到 ebreak 时, 延后一拍打印 (那时计数器已经统计到 ebreak 本身),
+  // 保证只打印一次。
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      pf_reported <= 1'b0;
+      pf_report_pending <= 1'b0;
+    end
+    else begin
+      pf_report_pending <= !pf_reported && (st == S_EXEC) && ex_ebreak;
+      if (pf_report_pending) begin
+        pf_reported <= 1'b1;
+        $display("PERF cyc=%0d inst=%0d ifu=%0d ifu_stall_req=%0d ifu_stall_mem=%0d ld=%0d st=%0d lsu_cyc=%0d exu=%0d alu=%0d load=%0d store=%0d branch=%0d jump=%0d csr=%0d sys=%0d ic_hit=%0d ic_miss=%0d ic_bypass=%0d ic_miss_cyc=%0d c_alu=%0d c_load=%0d c_store=%0d c_branch=%0d c_jump=%0d c_csr=%0d c_sys=%0d",
+          pf_cyc, pf_inst, pf_ifu, pf_ifu_stall_req, pf_ifu_stall_mem,
+          pf_ld, pf_st, pf_lsu_cyc, pf_exu,
+          pf_alu, pf_load, pf_store, pf_branch, pf_jump, pf_csr, pf_sys,
+          pf_ic_hit, pf_ic_miss, pf_ic_bypass, pf_ic_miss_cyc,
+          pf_c_alu, pf_c_load, pf_c_store, pf_c_branch, pf_c_jump, pf_c_csr, pf_c_sys);
+      end
+    end
+  end
+`endif
 endmodule

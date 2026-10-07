@@ -43,7 +43,7 @@ module top #(
     .pc (pc), .inst (inst), .gpr_dbg (gpr_dbg), .inst_done (inst_done),
     .mem_valid (mem_valid), .mem_we (mem_we), .mem_size (mem_size),
     .mem_addr (mem_addr), .mem_wdata (mem_wdata), .mem_rdata (mem_rdata),
-    .ifu_axi (ifu_bus), .lsu_axi (lsu_bus),
+    .ifu_mem (ifu_bus), .lsu_axi (lsu_bus),
     .state_dbg (dbg_state)
   );
 

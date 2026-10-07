@@ -23,6 +23,10 @@ CFLAGS += -DMAINARGS_MAX_LEN=$(MAINARGS_MAX_LEN) -DMAINARGS_PLACEHOLDER=$(MAINAR
 
 # 在 ysyxSoC 的仿真环境中运行: 把镜像作为 MROM 的内容
 SOCFLAGS += $(addprefix --mrom ,$(abspath $(IMAGE).bin))
+# B4: 程序的内存布局优化 —— 在代码前填充 TEXT_PAD 个空白字节
+ifdef TEXT_PAD
+ASFLAGS += -DTEXT_PAD=$(TEXT_PAD)
+endif
 # 可选: 加上 DIFF_REF=<NEMU 共享库路径> 即可打开 DiffTest
 ifdef DIFF_REF
 SOCFLAGS += -d $(DIFF_REF)

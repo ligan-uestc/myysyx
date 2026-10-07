@@ -1,6 +1,7 @@
 include $(AM_HOME)/scripts/isa/riscv.mk
 include $(AM_HOME)/scripts/platform/ysyxsoc.mk
-COMMON_CFLAGS += -march=rv32e_zicsr -mabi=ilp32e  # overwrite
+# zifencei: bootloader 里要用 fence.i (B4 的缓存一致性)
+COMMON_CFLAGS += -march=rv32e_zicsr_zifencei -mabi=ilp32e  # overwrite
 LDFLAGS       += -melf32lriscv                    # overwrite
 
 AM_SRCS += riscv/ysyxsoc/libgcc/div.S \

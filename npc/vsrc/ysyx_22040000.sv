@@ -88,7 +88,7 @@ module ysyx_22040000 (
     .pc (), .inst (), .gpr_dbg (), .inst_done (),
     .mem_valid (), .mem_we (), .mem_size (), .mem_addr (),
     .mem_wdata (), .mem_rdata (),
-    .ifu_axi (ifu_bus), .lsu_axi (lsu_bus),
+    .ifu_mem (ifu_bus), .lsu_axi (lsu_bus),
     .state_dbg ()
   );
 

@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // ysyxSoC 的 MROM (0x2000_0000 ~ 0x2000_0fff) 与 flash (0x3000_0000 ~ ...)
@@ -71,6 +72,10 @@ static uint32_t s_retire_gpr[N_GPR] = {};
 static bool     s_retire_mem_valid = false, s_retire_mem_we = false;
 static uint32_t s_retire_maddr = 0, s_retire_mdata = 0, s_retire_msize = 0;
 
+// B4: itrace (只记录 PC, 供 cachesim 做性能测试的 DiffTest)
+static std::vector<uint32_t> s_itrace;
+static bool                  s_itrace_on = false;
+
 extern "C" void npc_retire(int pc, int inst,
     int x1, int x2, int x3, int x4, int x5, int x6, int x7, int x8,
     int x9, int x10, int x11, int x12, int x13, int x14, int x15,
@@ -94,6 +99,11 @@ extern "C" void npc_retire(int pc, int inst,
   s_retire_mdata     = (uint32_t)mem_data;
   s_retire_msize     = (uint32_t)mem_size;
   s_retire_pending   = true;
+  // itrace 只记录"程序真正执行过"的指令: ebreak 之后仿真可能还会多跑几个
+  // 周期 (为了让 RTL 打印性能计数器), 那些指令不进 itrace。
+  // ebreak 本身要记录, 这样 itrace 的长度与 RTL 的动态指令数完全一致。
+  if (s_itrace_on && (!s_stop || (uint32_t)inst == 0x00100073u))
+    s_itrace.push_back((uint32_t)pc);
 }
 
 // 处理一条退休指令: trace 与 DiffTest
@@ -141,6 +151,8 @@ int main(int argc, char **argv) {
 
   const char *img = nullptr;
   const char *ref_so = nullptr;
+  const char *itrace_path = nullptr;
+  uint32_t    img_base = 0x20000000u;   // 镜像在 MROM 中的加载地址
   bool        verbose = false;
   for (int i = 1; i < argc; i ++) {
     if (strcmp(argv[i], "-n") == 0 && i + 1 < argc)      s_max_cyc = strtoull(argv[++i], nullptr, 0);
@@ -148,6 +160,8 @@ int main(int argc, char **argv) {
     else if ((strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--diff") == 0) && i + 1 < argc)
                                                          ref_so = argv[++i];
     else if (strcmp(argv[i], "-v") == 0)                 verbose = true;
+    else if (strcmp(argv[i], "--itrace") == 0 && i + 1 < argc) { itrace_path = argv[++i]; s_itrace_on = true; }
+    else if (strcmp(argv[i], "--mrom-base") == 0 && i + 1 < argc) img_base = (uint32_t)strtoul(argv[++i], nullptr, 0);
     else if (argv[i][0] != '-')                          img = argv[i];
   }
 
@@ -160,8 +174,9 @@ int main(int argc, char **argv) {
 
   if (img != nullptr) {
     size_t n = 0;
-    if (!load_file(img, mrom, MROM_SIZE, &n)) return 1;
-    printf("[soc] MROM <- %s (%zu bytes)\n", img, n);
+    uint32_t off = (img_base - MROM_BASE) & (MROM_SIZE - 1);
+    if (!load_file(img, mrom + off, MROM_SIZE - off, &n)) return 1;
+    printf("[soc] MROM <- %s @ 0x%08x (%zu bytes)\n", img, img_base, n);
   }
 
   VysyxSoCFull *dut = new VysyxSoCFull;
@@ -196,7 +211,19 @@ int main(int argc, char **argv) {
     if (s_max_cyc != 0 && s_cycles >= s_max_cyc) break;
     if (s_cycles % (1ull << 30) == 0) fprintf(stderr, "[soc] %llu cycles\n", (unsigned long long)s_cycles);
   }
+
+  // 多跑几个周期: 让 RTL 有机会把性能计数器打印出来 (它在 halt 后一拍输出)
+  for (int i = 0; i < 4; i ++) { dut->clock = 0; dut->eval(); dut->clock = 1; dut->eval(); }
   dut->final();
+
+  if (itrace_path != nullptr) {
+    FILE *fp = fopen(itrace_path, "w");
+    if (fp != nullptr) {
+      for (uint32_t pc : s_itrace) fprintf(fp, "%08x\n", pc);
+      fclose(fp);
+      fprintf(stderr, "[soc] itrace -> %s (%zu entries)\n", itrace_path, s_itrace.size());
+    }
+  }
 
   if (s_stop) printf("\n[soc] NPC halted with code %d after %llu cycles (%llu instructions)\n",
                      s_trap, (unsigned long long)s_cycles, (unsigned long long)nr_inst);

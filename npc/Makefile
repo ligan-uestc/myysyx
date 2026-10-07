@@ -22,11 +22,32 @@ ARGS ?=
 RAND_DELAY ?= 0
 VERILATOR_CFLAGS += -GRAND_DELAY=$(RAND_DELAY)
 
+# ---------------------------------------------------------------------------
+# B4: icache 参数与性能计数器开关
+#   make ICACHE_BLOCK=16 ICACHE_BLOCKS=64          # 换一组 cache 参数
+#   make PERF=1                                    # 打开性能计数器
+# ---------------------------------------------------------------------------
+PERF          ?= 0
+ICACHE_BLOCK  ?= 4
+ICACHE_BLOCKS ?= 16
+ICACHE_SRAM   ?= 0
+NPC_CFG_DEFS   = +define+NPC_ICACHE_BLOCK=$(ICACHE_BLOCK) \
+                 +define+NPC_ICACHE_BLOCKS=$(ICACHE_BLOCKS) \
+                 +define+NPC_ICACHE_SRAM=$(ICACHE_SRAM)
+PERF_DEFS      = $(if $(filter 1,$(PERF)),+define+NPC_PERF,)
+VERILATOR_CFLAGS += $(NPC_CFG_DEFS) $(PERF_DEFS)
+
 default: $(BIN)
 
 $(shell mkdir -p $(BUILD_DIR))
 
-$(BIN): $(VSRCS) $(CSRCS)
+# 把 verilator 选项写进一个标记文件: 选项变化时 (例如切换 PERF=1 或改 icache
+# 参数) 触发重新编译, 否则 make 会认为目标是最新的。
+# 注意: 这两条 $(shell ...) 必须放在所有选项变量都定义完之后 (见下面 SOC 段)。
+STANDALONE_FLAGS_FILE = $(BUILD_DIR)/.top_flags
+SOC_FLAGS_FILE        = $(BUILD_DIR)/.soc_flags
+
+$(BIN): $(VSRCS) $(CSRCS) $(STANDALONE_FLAGS_FILE)
 	@rm -rf $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
 		+incdir+$(abspath ./vsrc) \
@@ -53,6 +74,7 @@ SOC_OBJ   = $(BUILD_DIR)/soc_obj
 SOC_BIN   = $(BUILD_DIR)/soc
 SOC_SRCS  = $(abspath ./vsrc/axi4_if.sv) \
             $(abspath ./vsrc/alu.sv) \
+            $(abspath ./vsrc/icache.sv) \
             $(abspath ./vsrc/regfile.sv) \
             $(abspath ./vsrc/npc_core.sv) \
             $(abspath ./vsrc/axi_arbiter.sv) \
@@ -60,7 +82,11 @@ SOC_SRCS  = $(abspath ./vsrc/axi4_if.sv) \
             $(abspath ./vsrc/ysyx_22040000.sv)
 SOC_PERIP = $(shell find $(SOC_HOME)/perip -name '*.v')
 SOC_VERILATOR_FLAGS = --build -cc -O3 --x-assign fast --x-initial fast --noassert \
-	-Wno-fatal --timescale "1ns/1ns" --no-timing --autoflush
+	-Wno-fatal --timescale "1ns/1ns" --no-timing --autoflush \
+	$(NPC_CFG_DEFS) $(PERF_DEFS)
+
+$(shell mkdir -p $(BUILD_DIR); printf '%s\n' '$(VERILATOR_CFLAGS)' > $(STANDALONE_FLAGS_FILE).new; cmp -s $(STANDALONE_FLAGS_FILE).new $(STANDALONE_FLAGS_FILE) || mv -f $(STANDALONE_FLAGS_FILE).new $(STANDALONE_FLAGS_FILE))
+$(shell mkdir -p $(BUILD_DIR); printf '%s\n' '$(SOC_VERILATOR_FLAGS)' > $(SOC_FLAGS_FILE).new; cmp -s $(SOC_FLAGS_FILE).new $(SOC_FLAGS_FILE) || mv -f $(SOC_FLAGS_FILE).new $(SOC_FLAGS_FILE))
 
 soc: $(SOC_BIN)
 
@@ -75,7 +101,7 @@ $(SOC_TOP_V): $(SOC_HOME)/build/ysyxSoCFull.v
 
 SOC_CSRCS = ./csrc/soc_main.cpp ./csrc/difftest.cpp
 
-$(SOC_BIN): $(SOC_SRCS) $(SOC_PERIP) $(SOC_TOP_V) $(SOC_CSRCS)
+$(SOC_BIN): $(SOC_SRCS) $(SOC_PERIP) $(SOC_TOP_V) $(SOC_CSRCS) $(SOC_FLAGS_FILE)
 	@rm -rf $(SOC_OBJ)
 	$(VERILATOR) $(SOC_VERILATOR_FLAGS) \
 		+incdir+$(abspath ./vsrc) \
@@ -88,6 +114,23 @@ $(SOC_BIN): $(SOC_SRCS) $(SOC_PERIP) $(SOC_TOP_V) $(SOC_CSRCS)
 
 soc-run: $(SOC_BIN)
 	@$(SOC_BIN) $(SOC_ARGS)
+
+# ---------------------------------------------------------------------------
+# B4: 性能评估 —— 打开性能计数器, 运行指定镜像, 打印性能数据
+#
+#   make perf PERF_IMG=<image.bin>
+#   make perf PERF_IMG=... ICACHE_BLOCK=16 ICACHE_BLOCKS=64
+#
+# 输出的各项性能数据可用于讲义要求的"记录性能数据"表格, 也可用于
+# 结合 Amdahl's law 寻找性能瓶颈。
+# ---------------------------------------------------------------------------
+PERF_IMG ?= $(abspath ./tests/bench.bin)
+
+perf:
+	@rm -f $(SOC_BIN)
+	@$(MAKE) --no-print-directory soc PERF=1
+	@$(SOC_BIN) --mrom $(PERF_IMG) > /tmp/npc-perf.out 2>&1 || true
+	@grep -h '^PERF' /tmp/npc-perf.out | tail -1 | python3 tools/perf_report.py
 
 # AM (`make ARCH=riscv32e-npc run`) passes IMG/ARGS through
 # abstract-machine/scripts/platform/npc.mk
