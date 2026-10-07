@@ -35,7 +35,7 @@ module top #(
   output logic        dbg_arvalid, dbg_arready, dbg_rvalid, dbg_rready,
   output logic [31:0] dbg_araddr, dbg_rdata
 );
-  axi4lite_if ifu_bus (), lsu_bus (), arb_out (), mem_bus (), clint_bus (), uart_bus ();
+  axi4_if ifu_bus (), lsu_bus (), arb_out (), mem_bus (), clint_bus (), uart_bus ();
   logic        mtip_unused;
 
   npc_core u_core (

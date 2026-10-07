@@ -32,12 +32,24 @@ module npc_core #(
   output logic [31:0] mem_addr,
   output logic [31:0] mem_wdata,
   output logic [31:0] mem_rdata,
-  // ---- AXI4-Lite master ----
-  axi4lite_if.master  ifu_axi,     // 取指
-  axi4lite_if.master  lsu_axi,     // 访存
+  // ---- AXI4 master (B2: 由 AXI4-Lite 扩展而来) ----
+  axi4_if.master      ifu_axi,     // 取指
+  axi4_if.master      lsu_axi,     // 访存
   output logic [2:0]  state_dbg    // (调试) 状态机
 );
   import "DPI-C" function void ebreak(input int code);
+  // B2: 每 retire 一条指令就通知仿真环境 (trace / DiffTest 用)。
+  // ysyxSoCFull 只暴露少量外部引脚, 拿不到 NPC 的内部信号, 因此这里用 DPI-C
+  // 主动把 "退休的 PC、指令、16 个通用寄存器、访存信息" 报给仿真环境。
+  import "DPI-C" function void npc_retire(
+    input int pc, input int inst,
+    input int x1,  input int x2,  input int x3,  input int x4,
+    input int x5,  input int x6,  input int x7,  input int x8,
+    input int x9,  input int x10, input int x11, input int x12,
+    input int x13, input int x14, input int x15,
+    input int next_pc,
+    input int mem_valid, input int mem_we,
+    input int mem_addr, input int mem_data, input int mem_size);
 
   // ------------------------------------------------------------------
   // 状态机
@@ -444,37 +456,110 @@ module npc_core #(
   end
 
   // ------------------------------------------------------------------
-  // AXI4-Lite: IFU (只读)
+  // AXI4: IFU (只读)
+  //
+  // 取指固定访问 4 字节, 因此 arsize=2 (2^2=4)、单拍 (arlen=0)、INCR。
   // ------------------------------------------------------------------
-  assign ifu_axi.arvalid = (st == S_FETCH_AR);
+  assign ifu_axi.arid    = 4'd0;
+  assign ifu_axi.arlen   = 8'd0;
+  assign ifu_axi.arsize  = 3'd2;
+  assign ifu_axi.arburst = 2'b01;   // INCR
+  // 注意: 在 ysyxSoC 中 CPU 的复位会被刻意延迟 10 个周期 (等 ChipLink 初始化),
+  // 如果复位期间仍然驱动 arvalid, 设备会在 CPU 还在复位时就完成一次请求,
+  // 之后 CPU 复位结束却等不到第二次 arready, 造成死锁。因此这里用 !rst 屏蔽。
+  assign ifu_axi.arvalid = (st == S_FETCH_AR) && !rst;
   assign ifu_axi.araddr  = pc_q;
-  assign ifu_axi.rready  = (st == S_FETCH_R);
+  assign ifu_axi.rready  = (st == S_FETCH_R) && !rst;
   // IFU 不写存储器, 写通道全部置 0 (讲义要求)
+  assign ifu_axi.awid    = 4'd0;
+  assign ifu_axi.awlen   = 8'd0;
+  assign ifu_axi.awsize  = 3'd2;
+  assign ifu_axi.awburst = 2'b01;
   assign ifu_axi.awvalid = 1'b0;
   assign ifu_axi.awaddr  = 32'b0;
   assign ifu_axi.wvalid  = 1'b0;
   assign ifu_axi.wdata   = 32'b0;
   assign ifu_axi.wstrb   = 4'b0;
+  assign ifu_axi.wlast   = 1'b1;
   assign ifu_axi.bready  = 1'b0;
 
   // ------------------------------------------------------------------
-  // AXI4-Lite: LSU (读 + 写)
+  // AXI4: LSU (读 + 写)
+  //
+  // 这里的 arsize 就是讲义里反复强调的"实际数据位宽":
+  //   lb/lbu -> 0 (1 字节), lh/lhu -> 1 (2 字节), lw/sw -> 2 (4 字节)
+  // 有了它, 设备才能只访问软件真正想要的那一个设备寄存器。
   // ------------------------------------------------------------------
-  assign lsu_axi.arvalid = (st == S_LD_AR);
+  assign lsu_axi.arid    = 4'd0;
+  assign lsu_axi.arlen   = 8'd0;
+  assign lsu_axi.arsize  = {1'b0, lsu_size_q};
+  assign lsu_axi.arburst = 2'b01;   // INCR
+  assign lsu_axi.arvalid = (st == S_LD_AR) && !rst;
   assign lsu_axi.araddr  = lsu_addr_q;
-  assign lsu_axi.rready  = (st == S_LD_R);
+  assign lsu_axi.rready  = (st == S_LD_R) && !rst;
 
-  assign lsu_axi.awvalid = (st == S_ST_AW) && !aw_done;
+  assign lsu_axi.awid    = 4'd0;
+  assign lsu_axi.awlen   = 8'd0;
+  assign lsu_axi.awsize  = {1'b0, lsu_size_q};
+  assign lsu_axi.awburst = 2'b01;   // INCR
+  assign lsu_axi.awvalid = (st == S_ST_AW) && !aw_done && !rst;
   assign lsu_axi.awaddr  = lsu_addr_q;
-  assign lsu_axi.wvalid  = (st == S_ST_AW) && !w_done;
+  assign lsu_axi.wvalid  = (st == S_ST_AW) && !w_done && !rst;
   assign lsu_axi.wdata   = lsu_wdata_q;
   assign lsu_axi.wstrb   = lsu_wstrb_q;
-  assign lsu_axi.bready  = (st == S_ST_B);
+  assign lsu_axi.wlast   = 1'b1;    // 单拍传输
+  assign lsu_axi.bready  = (st == S_ST_B) && !rst;
 
   // ------------------------------------------------------------------
   // 调试端口 (trace / DiffTest)
   // ------------------------------------------------------------------
   assign inst_done = ex_done || ld_fire || st_fire;
+
+  // ------------------------------------------------------------------
+  // 通知仿真环境: 一条指令退休 (供 trace 与 DiffTest 使用)
+  //
+  // 写回发生在时钟沿, 而 gpr_dbg 是组合逻辑读出的寄存器堆, 因此在"退休的
+  // 那一刻"组合相里读到的还是旧值。这里把退休事件延迟一拍上报: 下个周期
+  // gpr_dbg 已经是写回后的值, 而 pc_q 也正好是下一条指令的 PC。
+  // ------------------------------------------------------------------
+  logic        retire_d, retire_valid_q;
+  logic [31:0] retire_pc_q, retire_inst_q, retire_maddr_q, retire_mdata_q;
+  logic        retire_mwe_q, retire_mvalid_q;
+  logic [1:0]  retire_msize_q;
+
+  assign retire_d = (ex_done || ld_fire || st_fire) && !rst;
+
+  always_ff @(posedge clk) begin
+    retire_valid_q <= retire_d;
+    if (retire_d) begin
+      retire_pc_q    <= pc_q;
+      retire_inst_q  <= inst_q;
+      retire_mvalid_q <= ld_fire || st_fire;
+      retire_mwe_q   <= st_fire;
+      retire_maddr_q <= lsu_addr_q;
+      retire_mdata_q <= st_fire ? lsu_wdata_q : mem_rdata_sel;
+      retire_msize_q <= lsu_size_q;
+    end
+  end
+
+  // 用 always_ff 调用 DPI 函数: 保证每次退休只上报一次 (组合逻辑块可能被
+  // 反复求值), 而且此时寄存器堆里已经是写回之后的值。
+  always_ff @(posedge clk) begin
+    if (retire_valid_q && !rst)
+      npc_retire(int'(retire_pc_q), int'(retire_inst_q),
+        int'(gpr_dbg[1 *32 +: 32]), int'(gpr_dbg[2 *32 +: 32]),
+        int'(gpr_dbg[3 *32 +: 32]), int'(gpr_dbg[4 *32 +: 32]),
+        int'(gpr_dbg[5 *32 +: 32]), int'(gpr_dbg[6 *32 +: 32]),
+        int'(gpr_dbg[7 *32 +: 32]), int'(gpr_dbg[8 *32 +: 32]),
+        int'(gpr_dbg[9 *32 +: 32]), int'(gpr_dbg[10*32 +: 32]),
+        int'(gpr_dbg[11*32 +: 32]), int'(gpr_dbg[12*32 +: 32]),
+        int'(gpr_dbg[13*32 +: 32]), int'(gpr_dbg[14*32 +: 32]),
+        int'(gpr_dbg[15*32 +: 32]),
+        int'(pc_q),                       // 退休后的 PC (下一条指令)
+        int'(retire_mvalid_q), int'(retire_mwe_q),
+        int'(retire_maddr_q), int'(retire_mdata_q), int'({1'b0, retire_msize_q}));
+  end
+
   assign mem_valid = ld_fire || st_fire;
   assign mem_we    = st_fire;
   assign mem_size  = lsu_size_q;

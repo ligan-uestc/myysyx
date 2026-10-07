@@ -1,4 +1,5 @@
-// AXI4-Lite 从设备: 简化 CLINT (Core Local INTerrupt controller)
+// AXI4 从设备: 简化 CLINT (Core Local INTerrupt controller)
+// (B2: 由 AXI4-Lite 升级; 讲义要求 CLINT 属于处理器模块, ysyxSoC 不包含它)
 //
 // 目前只需要时钟相关的功能 (讲义: 暂时不实现中断):
 //   mtime     (只读, 每周期 +1 的 64 位计数器)  0x0200_BFF8 / 0x0200_BFFC
@@ -7,8 +8,8 @@
 module axi_clint (
   input  logic        clk,
   input  logic        rst,
-  axi4lite_if.slave   s,
-  output logic        mtip          // mtime >= mtimecmp (供中断使用, 目前悬空)
+  axi4_if.slave       s,
+  output logic        mtip          // mtime >= mtimecmp (供中断使用)
 );
   localparam logic [31:0] CLINT_BASE   = 32'h0200_0000;
   localparam logic [31:0] MTIMECMP_LO  = CLINT_BASE + 32'h0000_4000;
@@ -29,6 +30,7 @@ module axi_clint (
   typedef enum logic [1:0] { R_IDLE, R_WAIT, R_DATA } rstate_t;
   rstate_t     rstate;
   logic [31:0] raddr_q, rdata_q;
+  logic [3:0]  rid_q;
 
   always_ff @(posedge clk) begin
     if (rst) rstate <= R_IDLE;
@@ -36,6 +38,7 @@ module axi_clint (
       unique case (rstate)
         R_IDLE: if (s.arvalid && s.arready) begin
           raddr_q <= s.araddr;
+          rid_q   <= s.arid;
           unique case (s.araddr)
             MTIME_LO:    rdata_q <= mtime_q[31:0];
             MTIME_HI:    rdata_q <= mtime_q[63:32];
@@ -55,11 +58,14 @@ module axi_clint (
   assign s.rvalid  = (rstate == R_DATA);
   assign s.rdata   = rdata_q;
   assign s.rresp   = 2'b00;
+  assign s.rid     = rid_q;
+  assign s.rlast   = 1'b1;
 
   // ---------------- 写通道 (只写 mtimecmp) ----------------
   typedef enum logic [1:0] { W_IDLE, W_RESP } wstate_t;
   wstate_t     wstate;
   logic [31:0] waddr_q, wdata_q;
+  logic [3:0]  wid_q;
   logic [3:0]  wstrb_q;
   logic        aw_got, w_got;
 
@@ -76,7 +82,7 @@ module axi_clint (
     else begin
       unique case (wstate)
         W_IDLE: begin
-          if (aw_fire && !aw_got) begin waddr_q <= s.awaddr; aw_got <= 1'b1; end
+          if (aw_fire && !aw_got) begin waddr_q <= s.awaddr; wid_q <= s.awid; aw_got <= 1'b1; end
           if (w_fire  && !w_got)  begin wdata_q <= s.wdata; wstrb_q <= s.wstrb; w_got <= 1'b1; end
           if ((aw_got || aw_fire) && (w_got || w_fire)) begin
             logic [31:0] wa;
@@ -99,4 +105,5 @@ module axi_clint (
   assign s.wready  = (wstate == W_IDLE) && !w_got;
   assign s.bvalid  = (wstate == W_RESP);
   assign s.bresp   = 2'b00;
+  assign s.bid     = wid_q;
 endmodule

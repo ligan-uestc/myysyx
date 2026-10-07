@@ -1,4 +1,17 @@
-# NPC: RV32E 单周期处理器（C2/D4）
+# NPC: RV32E 处理器（C2/D4/B1/B2）
+
+> **B2 更新**：NPC 已经接入 ysyxSoC。
+> * 访存接口从 AXI4-Lite 扩展为**完整 AXI4**（`vsrc/axi4_if.sv`，带
+>   `id/len/size/burst/last`；`arsize/awsize` 由访存指令的宽度决定）；
+> * 新增符合 `spec/cpu-interface.md` 的顶层 `vsrc/ysyx_22040000.sv`
+>   （不再包含习题用的 AXI4-Lite SRAM/UART，但保留 CLINT）；
+> * 新增 SoC 仿真环境 `csrc/soc_main.cpp` 与构建目标 `make soc` / `make soc-run`，
+>   verilator 的顶层模块是 ysyxSoC 的 `ysyxSoCFull`；
+> * 新增 DPI-C 退休回调 `npc_retire()`，用于在 SoC 仿真里做 trace 与 DiffTest；
+> * 复位期间不驱动 AXI 请求（SoC 会刻意延迟 CPU 复位 10 个周期）；
+> * 新增裸机小程序 `tests/char-test.c`（输出 `A`）与 `--autoflush` 选项。
+>
+> 详见 `lecture/B2_SoC计算机系统_完成过程.md`。
 
 用 RTL（SystemVerilog + Verilator）实现的模块化**多周期**处理器，支持完整的
 RV32E 指令集，通过 **AXI4-Lite 总线**访问存储器与设备，并配有

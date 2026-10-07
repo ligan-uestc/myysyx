@@ -1,4 +1,5 @@
-// AXI4-Lite 交叉开关 (Xbar): 把上游的一个 slave 端口按地址译码到三个从设备
+// AXI4 交叉开关 (Xbar) (B2: 由 AXI4-Lite 版本扩展而来):
+// 把上游的一个 slave 端口按地址译码到三个从设备
 // (存储器 / CLINT / UART)。
 //
 // 由于仲裁器保证同一时刻只有一个上游 master 在通信, 这里只需要实现
@@ -9,10 +10,10 @@
 module axi_xbar (
   input  logic        clk,
   input  logic        rst,
-  axi4lite_if.slave   s,        // 上游 (来自仲裁器)
-  axi4lite_if.master  m_mem,    // 0x8000_0000 ~ 0x8fff_ffff : 存储器
-  axi4lite_if.master  m_clint,  // 0x0200_0000 ~ 0x0200_ffff : CLINT
-  axi4lite_if.master  m_uart,   // 其它 (0xa000_0000...)      : UART
+  axi4_if.slave       s,        // 上游 (来自仲裁器)
+  axi4_if.master      m_mem,    // 0x8000_0000 ~ 0x8fff_ffff : 存储器
+  axi4_if.master      m_clint,  // 0x0200_0000 ~ 0x0200_ffff : CLINT
+  axi4_if.master      m_uart,   // 其它 (0xa000_0000...)      : UART
   output logic [1:0]  state_dbg
 );
   typedef enum logic [1:0] { X_IDLE, X_MEM, X_CLINT, X_UART } xstate_t;
@@ -31,7 +32,7 @@ module axi_xbar (
   wire [1:0]  sel = (st == X_IDLE) ? decode(req_addr) : st;   // 连续赋值
 
   wire start = (st == X_IDLE) && ((s.arvalid && s.arready) || (s.awvalid && s.awready));
-  wire done  = (s.rvalid && s.rready) || (s.bvalid && s.bready);
+  wire done  = (s.rvalid && s.rlast && s.rready) || (s.bvalid && s.bready);
 
   always_ff @(posedge clk) begin
     if (rst) st <= X_IDLE;
@@ -50,6 +51,9 @@ module axi_xbar (
   assign s.rdata   = (sel == X_MEM) ? m_mem.rdata   : (sel == X_CLINT) ? m_clint.rdata   : m_uart.rdata;
   assign s.rresp   = (sel == X_MEM) ? m_mem.rresp   : (sel == X_CLINT) ? m_clint.rresp   : m_uart.rresp;
   assign s.bresp   = (sel == X_MEM) ? m_mem.bresp   : (sel == X_CLINT) ? m_clint.bresp   : m_uart.bresp;
+  assign s.rid     = (sel == X_MEM) ? m_mem.rid     : (sel == X_CLINT) ? m_clint.rid     : m_uart.rid;
+  assign s.bid     = (sel == X_MEM) ? m_mem.bid     : (sel == X_CLINT) ? m_clint.bid     : m_uart.bid;
+  assign s.rlast   = (sel == X_MEM) ? m_mem.rlast   : (sel == X_CLINT) ? m_clint.rlast   : m_uart.rlast;
 
   // ---------------- 上游 -> 被选中的下游 ----------------
   assign m_mem.arvalid   = (sel == X_MEM)   ? s.arvalid : 1'b0;
@@ -71,8 +75,17 @@ module axi_xbar (
   assign m_uart.bready   = (sel == X_UART)  ? s.bready  : 1'b0;
 
   // 地址/数据广播 (只有被选中的端口会使用)
-  assign m_mem.araddr = s.araddr;   assign m_clint.araddr = s.araddr;   assign m_uart.araddr = s.araddr;
-  assign m_mem.awaddr = s.awaddr;   assign m_clint.awaddr = s.awaddr;   assign m_uart.awaddr = s.awaddr;
-  assign m_mem.wdata  = s.wdata;    assign m_clint.wdata  = s.wdata;    assign m_uart.wdata  = s.wdata;
-  assign m_mem.wstrb  = s.wstrb;    assign m_clint.wstrb  = s.wstrb;    assign m_uart.wstrb  = s.wstrb;
+  assign m_mem.araddr  = s.araddr;  assign m_clint.araddr  = s.araddr;  assign m_uart.araddr  = s.araddr;
+  assign m_mem.awaddr  = s.awaddr;  assign m_clint.awaddr  = s.awaddr;  assign m_uart.awaddr  = s.awaddr;
+  assign m_mem.wdata   = s.wdata;   assign m_clint.wdata   = s.wdata;   assign m_uart.wdata   = s.wdata;
+  assign m_mem.wstrb   = s.wstrb;   assign m_clint.wstrb   = s.wstrb;   assign m_uart.wstrb   = s.wstrb;
+  assign m_mem.arid    = s.arid;    assign m_clint.arid    = s.arid;    assign m_uart.arid    = s.arid;
+  assign m_mem.awid    = s.awid;    assign m_clint.awid    = s.awid;    assign m_uart.awid    = s.awid;
+  assign m_mem.arlen   = s.arlen;   assign m_clint.arlen   = s.arlen;   assign m_uart.arlen   = s.arlen;
+  assign m_mem.awlen   = s.awlen;   assign m_clint.awlen   = s.awlen;   assign m_uart.awlen   = s.awlen;
+  assign m_mem.arsize  = s.arsize;  assign m_clint.arsize  = s.arsize;  assign m_uart.arsize  = s.arsize;
+  assign m_mem.awsize  = s.awsize;  assign m_clint.awsize  = s.awsize;  assign m_uart.awsize  = s.awsize;
+  assign m_mem.arburst = s.arburst; assign m_clint.arburst = s.arburst; assign m_uart.arburst = s.arburst;
+  assign m_mem.awburst = s.awburst; assign m_clint.awburst = s.awburst; assign m_uart.awburst = s.awburst;
+  assign m_mem.wlast   = s.wlast;   assign m_clint.wlast   = s.wlast;   assign m_uart.wlast   = s.wlast;
 endmodule

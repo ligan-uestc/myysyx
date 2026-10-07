@@ -1,5 +1,9 @@
 // AXI4-Lite 接口 (B1 总线讲义)
 //
+// 【已被 B2 取代】进入 SoC 阶段后, 讲义要求把 AXI4-Lite 扩展为完整 AXI4
+// (增加 id/len/size/burst/last), 新的接口定义在 vsrc/axi4_if.sv。
+// 本文件只作为 B1 阶段的历史记录保留, 不再被任何模块实例化。
+//
 // 5 个独立的通道, 每个通道都用 valid/ready 握手:
 //   读地址 AR    : araddr  / arvalid / arready
 //   读数据 R     : rdata / rresp / rvalid / rready

@@ -51,6 +51,20 @@ extern "C" void ebreak(int code) {
   s_stop = true;
 }
 
+// RTL 每 retire 一条指令都会调用这个钩子。独立仿真流程是从顶层端口读
+// PC/寄存器做 trace 与 DiffTest 的, 所以这里留一个空实现;
+// ysyxSoC 集成流程 (soc_main.cpp) 才用它做 DiffTest。
+extern "C" void npc_retire(int pc, int inst,
+    int x1, int x2, int x3, int x4, int x5, int x6, int x7, int x8,
+    int x9, int x10, int x11, int x12, int x13, int x14, int x15,
+    int next_pc, int mem_valid, int mem_we,
+    int mem_addr, int mem_data, int mem_size) {
+  (void)pc; (void)inst; (void)x1; (void)x2; (void)x3; (void)x4; (void)x5;
+  (void)x6; (void)x7; (void)x8; (void)x9; (void)x10; (void)x11; (void)x12;
+  (void)x13; (void)x14; (void)x15; (void)next_pc; (void)mem_valid;
+  (void)mem_we; (void)mem_addr; (void)mem_data; (void)mem_size;
+}
+
 void npc_load_image(const char *path, size_t *size) {
   FILE *fp = fopen(path, "rb");
   if (fp == nullptr) {

@@ -1,4 +1,4 @@
-// AXI4-Lite 从设备: 存储器 (128MiB @ 0x8000_0000)
+// AXI4 从设备: 存储器 (128MiB @ 0x8000_0000) (B2: 由 AXI4-Lite 升级)
 //
 // 物理存储仍然由仿真环境的 DPI-C 模型提供 (pmem_read/pmem_write), 本模块
 // 只负责实现 AXI4-Lite 的握手协议。
@@ -11,7 +11,7 @@ module axi_mem #(
 ) (
   input  logic        clk,
   input  logic        rst,
-  axi4lite_if.slave   s,
+  axi4_if.slave       s,
   output logic [1:0]  rstate_dbg,
   output logic [1:0]  wstate_dbg
 );
@@ -32,6 +32,7 @@ module axi_mem #(
   rstate_t     rstate;
   assign rstate_dbg = rstate;
   logic [31:0] raddr_q, rdata_q;
+  logic [3:0]  rid_q;
   logic [3:0]  rcnt;
 
   always_ff @(posedge clk) begin
@@ -43,6 +44,7 @@ module axi_mem #(
       unique case (rstate)
         R_IDLE: if (s.arvalid && s.arready) begin
           raddr_q <= s.araddr;
+          rid_q   <= s.arid;
           if (rand_dly == 4'd0) begin
             // 无延迟: 下一拍就能返回数据 (1 周期延迟, 与讲义一致)
             rdata_q <= 32'(pmem_read(int'(s.araddr)));
@@ -69,12 +71,15 @@ module axi_mem #(
   assign s.rvalid  = (rstate == R_DATA);
   assign s.rdata   = rdata_q;
   assign s.rresp   = 2'b00;   // OKAY
+  assign s.rid     = rid_q;
+  assign s.rlast   = 1'b1;    // 单拍传输
 
   // ---------------- 写通道 ----------------
   typedef enum logic [1:0] { W_IDLE, W_WAIT, W_RESP } wstate_t;
   wstate_t     wstate;
   assign wstate_dbg = wstate;
   logic [31:0] waddr_q, wdata_q;
+  logic [3:0]  wid_q;
   logic [3:0]  wstrb_q, wcnt;
   logic        aw_got, w_got;
 
@@ -91,7 +96,7 @@ module axi_mem #(
     else begin
       unique case (wstate)
         W_IDLE: begin
-          if (aw_fire && !aw_got) begin waddr_q <= s.awaddr; aw_got <= 1'b1; end
+          if (aw_fire && !aw_got) begin waddr_q <= s.awaddr; wid_q <= s.awid; aw_got <= 1'b1; end
           if (w_fire  && !w_got)  begin wdata_q <= s.wdata; wstrb_q <= s.wstrb; w_got <= 1'b1; end
           // AW 和 W 都到齐后才开始处理 (两者顺序任意)
           if ((aw_got || aw_fire) && (w_got || w_fire)) begin
@@ -117,4 +122,5 @@ module axi_mem #(
   assign s.wready  = (wstate == W_IDLE) && !w_got;
   assign s.bvalid  = (wstate == W_RESP);
   assign s.bresp   = 2'b00;   // OKAY
+  assign s.bid     = wid_q;
 endmodule
