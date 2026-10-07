@@ -9,7 +9,7 @@ OBJCOPY = $(CROSS)objcopy
 SOC = ../build/soc
 
 all: char-test.bin char-test-nonl.bin char-test-spin.bin smc.bin smc-fence.bin \
-     loader.bin loader-fence.bin
+     loader.bin loader-fence.bin trap.bin fence-smc.bin
 
 # 输出 'A' 与换行
 char-test.bin: char-test.c
@@ -67,7 +67,24 @@ run-loader: loader.bin
 run-loader-fence: loader-fence.bin
 	$(SOC) --mrom loader-fence.bin
 
+# 异常处理 (ecall / mret)
+trap.bin: trap.c
+	$(CROSS)gcc $(CFLAGS) $< -o trap.elf
+	$(OBJCOPY) -O binary --only-section=.text trap.elf $@
+
+run-trap: trap.bin
+	$(SOC) --mrom trap.bin
+
+# fence.i 的反例 (多周期正确 / 流水线必须冲刷流水线)
+fence-smc.bin: fence-smc.c
+	$(CROSS)gcc $(CFLAGS) $< -o fence-smc.elf
+	$(OBJCOPY) -O binary --only-section=.text fence-smc.elf $@
+
+run-fence-smc: fence-smc.bin
+	$(SOC) --mrom fence-smc.bin
+
 clean:
 	rm -f *.elf *.bin
 
-.PHONY: all run run-nonl run-spin run-smc run-smc-fence run-loader run-loader-fence clean
+.PHONY: all run run-nonl run-spin run-smc run-smc-fence run-loader run-loader-fence \
+        run-trap run-fence-smc clean

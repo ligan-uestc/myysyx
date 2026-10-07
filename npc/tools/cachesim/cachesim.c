@@ -16,6 +16,7 @@
 //     -f         从标准输入读取
 //     -B         输入是二进制 (每 4 字节一个小端 PC)
 //     -q         只打印一行结果
+//     -M         输入是 mtrace (访存序列), 模拟 dcache 而不是 icache
 //   TRACE 为 "-" 时从标准输入读取; 以 .bz2 结尾时用 bzcat 解压 (popen)。
 //
 // 输出的最后一行是机器可读的:
@@ -122,6 +123,7 @@ static FILE *open_trace(const char *path) {
 int main(int argc, char **argv) {
   const char *trace_path = NULL;
   int binary = 0, quiet = 0;
+  int mtrace_mode = 0;
   uint64_t miss_penalty = 0;
 
   for (int i = 1; i < argc; i ++) {
@@ -133,6 +135,7 @@ int main(int argc, char **argv) {
     else if (strcmp(argv[i], "-f") == 0) binary = 0;
     else if (strcmp(argv[i], "-B") == 0) binary = 1;
     else if (strcmp(argv[i], "-q") == 0) quiet = 1;
+    else if (strcmp(argv[i], "-M") == 0) mtrace_mode = 1;
     else if (argv[i][0] != '-')          trace_path = argv[i];
     else { fprintf(stderr, "cachesim: 未知选项 %s\n", argv[i]); return 1; }
   }
@@ -142,7 +145,20 @@ int main(int argc, char **argv) {
 
   uint64_t n_access = 0, n_hit = 0, n_miss = 0;
   uint32_t pc;
-  if (binary) {
+  if (mtrace_mode) {
+    // mtrace 格式 (见 npc/csrc/trace.cpp):
+    //   mtrace: 0x00100000 write len=4 data=... pc=...
+    // 只关心地址: 命中/缺失与访问内容无关, 因此 dcache 也只需要维护元数据。
+    char buf[512];
+    unsigned addr;
+    while (fgets(buf, sizeof(buf), fp)) {
+      if (sscanf(buf, "mtrace: 0x%x", &addr) != 1 &&
+          sscanf(buf, "%x", &addr) != 1) continue;
+      n_access ++;
+      if (cache_access(addr)) n_hit ++; else n_miss ++;
+    }
+  }
+  else if (binary) {
     while (fread(&pc, sizeof(pc), 1, fp) == 1) {
       n_access ++;
       if (cache_access(pc)) n_hit ++; else n_miss ++;

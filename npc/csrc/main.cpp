@@ -76,7 +76,7 @@ static bool sim_cycle() {
 
   if (!done) { return false; }
   g_nr_inst ++;
-  uint32_t next_pc = (uint32_t)top.pc;
+  uint32_t next_pc = (uint32_t)top.next_pc;
 
   // 3) 指令完成: itrace/mtrace/ftrace
   trace_observe(pc, inst, next_pc, mv, mwe, maddr, mdata, msize);

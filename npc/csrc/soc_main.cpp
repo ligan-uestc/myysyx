@@ -73,8 +73,13 @@ static bool     s_retire_mem_valid = false, s_retire_mem_we = false;
 static uint32_t s_retire_maddr = 0, s_retire_mdata = 0, s_retire_msize = 0;
 
 // B4: itrace (只记录 PC, 供 cachesim 做性能测试的 DiffTest)
-static std::vector<uint32_t> s_itrace;
+// itrace: 每次退休记录 (pc << 32) | inst —— 有了指令字, branchsim 才能识别
+// 分支指令并判断它实际是否跳转 (看下一条 PC)。
+static std::vector<uint64_t> s_itrace;
 static bool                  s_itrace_on = false;
+// B5: mtrace (访存序列) —— 供 cachesim 评估 dcache
+static std::vector<uint64_t> s_mtrace;
+static bool                  s_mtrace_on = false;
 
 extern "C" void npc_retire(int pc, int inst,
     int x1, int x2, int x3, int x4, int x5, int x6, int x7, int x8,
@@ -103,7 +108,9 @@ extern "C" void npc_retire(int pc, int inst,
   // 周期 (为了让 RTL 打印性能计数器), 那些指令不进 itrace。
   // ebreak 本身要记录, 这样 itrace 的长度与 RTL 的动态指令数完全一致。
   if (s_itrace_on && (!s_stop || (uint32_t)inst == 0x00100073u))
-    s_itrace.push_back((uint32_t)pc);
+    s_itrace.push_back(((uint64_t)(uint32_t)pc << 32) | (uint32_t)inst);
+  if (s_mtrace_on && (!s_stop || (uint32_t)inst == 0x00100073u) && mem_valid)
+    s_mtrace.push_back(((uint64_t)(uint32_t)mem_addr << 32) | (uint32_t)(mem_we ? 1 : 0));
 }
 
 // 处理一条退休指令: trace 与 DiffTest
@@ -152,6 +159,7 @@ int main(int argc, char **argv) {
   const char *img = nullptr;
   const char *ref_so = nullptr;
   const char *itrace_path = nullptr;
+  const char *mtrace_path = nullptr;
   uint32_t    img_base = 0x20000000u;   // 镜像在 MROM 中的加载地址
   bool        verbose = false;
   for (int i = 1; i < argc; i ++) {
@@ -161,6 +169,7 @@ int main(int argc, char **argv) {
                                                          ref_so = argv[++i];
     else if (strcmp(argv[i], "-v") == 0)                 verbose = true;
     else if (strcmp(argv[i], "--itrace") == 0 && i + 1 < argc) { itrace_path = argv[++i]; s_itrace_on = true; }
+    else if (strcmp(argv[i], "--mtrace") == 0 && i + 1 < argc) { mtrace_path = argv[++i]; s_mtrace_on = true; }
     else if (strcmp(argv[i], "--mrom-base") == 0 && i + 1 < argc) img_base = (uint32_t)strtoul(argv[++i], nullptr, 0);
     else if (argv[i][0] != '-')                          img = argv[i];
   }
@@ -219,9 +228,18 @@ int main(int argc, char **argv) {
   if (itrace_path != nullptr) {
     FILE *fp = fopen(itrace_path, "w");
     if (fp != nullptr) {
-      for (uint32_t pc : s_itrace) fprintf(fp, "%08x\n", pc);
+      for (uint64_t e : s_itrace) fprintf(fp, "%08x %08x\n", (uint32_t)(e >> 32), (uint32_t)e);
       fclose(fp);
       fprintf(stderr, "[soc] itrace -> %s (%zu entries)\n", itrace_path, s_itrace.size());
+    }
+  }
+  if (mtrace_path != nullptr) {
+    FILE *fp = fopen(mtrace_path, "w");
+    if (fp != nullptr) {
+      for (uint64_t e : s_mtrace)
+        fprintf(fp, "mtrace: 0x%08x %s\n", (uint32_t)(e >> 32), (e & 1) ? "write" : "read");
+      fclose(fp);
+      fprintf(stderr, "[soc] mtrace -> %s (%zu entries)\n", mtrace_path, s_mtrace.size());
     }
   }
 

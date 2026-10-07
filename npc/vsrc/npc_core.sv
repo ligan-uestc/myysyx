@@ -42,6 +42,7 @@ module npc_core #(
   // ---- 调试/仿真端口 (sdb / trace / DiffTest) ----
   output logic [31:0] pc,          // 当前正在取指/执行的 PC
   output logic [31:0] inst,        // 当前正在执行的指令
+  output logic [31:0] next_pc,     // 当前指令执行后的 PC (供仿真环境使用)
   output logic [512-1:0] gpr_dbg,  // 通用寄存器 (16 x 32)
   output logic        inst_done,   // 本周期有一条指令完成 (retire)
   output logic        mem_valid,   // 完成的指令是否访存 (mtrace)
@@ -86,6 +87,7 @@ module npc_core #(
 
   assign pc   = pc_q;
   assign inst = inst_q;
+  assign next_pc = pc_q;   // 多周期: 本周期结束后 pc_q 就是下一条指令的 PC
 
   // ------------------------------------------------------------------
   // CSR 文件 (与 C5 相同: 只实例化需要的)
@@ -518,6 +520,7 @@ module npc_core #(
     .req_addr   (ifu_req_addr),
     .resp_valid (ifu_resp_valid),
     .resp_data  (ifu_resp_data),
+    .resp_ready ((st == S_FETCH_AR || st == S_FETCH_R) && !rst),
     .flush      (icache_flush),
     .ev_hit     (ic_hit),
     .ev_miss    (ic_miss),

@@ -21,6 +21,7 @@ module top #(
   // ---- 调试/仿真端口 ----
   output logic [31:0] pc,
   output logic [31:0] inst,
+  output logic [31:0] next_pc,
   output logic [512-1:0] gpr_dbg,
   output logic        inst_done,
   output logic        mem_valid,
@@ -38,9 +39,14 @@ module top #(
   axi4_if ifu_bus (), lsu_bus (), arb_out (), mem_bus (), clint_bus (), uart_bus ();
   logic        mtip_unused;
 
+  // B5: CORE=multi 时用多周期核心 (B1/B2/B4 的实现), 默认用五级流水线核心
+`ifdef NPC_MULTICYCLE
   npc_core u_core (
+`else
+  npc_pipe_core u_core (
+`endif
     .clk (clk), .rst (rst),
-    .pc (pc), .inst (inst), .gpr_dbg (gpr_dbg), .inst_done (inst_done),
+    .pc (pc), .inst (inst), .next_pc (next_pc), .gpr_dbg (gpr_dbg), .inst_done (inst_done),
     .mem_valid (mem_valid), .mem_we (mem_we), .mem_size (mem_size),
     .mem_addr (mem_addr), .mem_wdata (mem_wdata), .mem_rdata (mem_rdata),
     .ifu_mem (ifu_bus), .lsu_axi (lsu_bus),

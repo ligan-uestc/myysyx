@@ -83,7 +83,12 @@ module ysyx_22040000 (
   logic        mtip;
 
   // ---------------- 处理器核心 ----------------
+  // B5: CORE=multi 时用多周期核心 (B2/B4 的实现), 默认用五级流水线核心
+`ifdef NPC_MULTICYCLE
   npc_core #(.PC_INIT(32'h2000_0000)) u_core (
+`else
+  npc_pipe_core #(.PC_INIT(32'h2000_0000)) u_core (
+`endif
     .clk (clock), .rst (reset),
     .pc (), .inst (), .gpr_dbg (), .inst_done (),
     .mem_valid (), .mem_we (), .mem_size (), .mem_addr (),

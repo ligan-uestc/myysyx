@@ -41,6 +41,7 @@ module icache #(
   input  logic [31:0] req_addr,
   output logic        resp_valid,
   output logic [31:0] resp_data,
+  input  logic        resp_ready,   // 流水线 IF 段准备好接收 (可被停顿)
   // ---- fence.i: 冲刷整个 icache ----
   input  logic        flush,
   // ---- 性能事件 ----
@@ -159,7 +160,8 @@ module icache #(
               bypass_q  <= 1'b0;
               is_miss_q <= 1'b1;
               miss_cyc  <= 32'd0;
-              req_word  <= req_addr[OFFW-1:0] >> 2;
+              // 请求的 4 字节字在块内的序号 (块大小 4B 时恒为 0)
+              req_word  <= 4'((req_addr >> 2) & ((32'd1 << (OFFW - 2)) - 32'd1));
               st        <= C_AR;
             end
             else begin
@@ -193,7 +195,8 @@ module icache #(
             end
           end
         end
-        C_RESP: st <= C_IDLE;
+        // 一直保持响应, 直到 IF 段接受 (流水线可能因为访存等原因被冻结)
+        C_RESP: if (resp_ready) st <= C_IDLE;
         C_BAR: if (mem.arvalid && mem.arready) st <= C_BR;
         C_BR:  if (mem.rvalid && mem.rready) begin
                  resp_data_q <= mem.rdata;

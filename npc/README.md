@@ -1,5 +1,18 @@
 # NPC: RV32E 处理器（C2/D4/B1/B2）
 
+> **B5 更新**：NPC 增加了一个**五级流水线**实现，并且可以在两套实现之间切换。
+> * `vsrc/npc_pipe_core.sv`：IF/ID/EX/MEM/WB 五级流水线
+>   * 数据冒险：转发（EX/MEM、MEM/WB → ID）+ 生产者还在 EX 时的停顿；
+>   * 控制冒险：预测不跳转，EX 段检查并冲刷；
+>   * 异常：ecall/mret 在 EX 处理（mepc 精确），并冲刷流水线；
+>   * `fence.i`：冲刷流水线 + 冲刷 icache；
+> * `make`/`make soc` 默认用流水线核心，`make CORE=multi` 切回多周期实现；
+> * 新增 `tools/branchsim/`（分支预测准确率评估），`cachesim -M` 支持 mtrace（dcache 评估）；
+> * 新增 `tests/{trap.c, fence-smc.c}`（异常处理、fence.i 反例）。
+> * 性能（crc32，ysyxSoC）：多周期 56795 周期 / IPC 0.386 → 流水线 46466 周期 / IPC 0.471。
+>
+> 详见 `lecture/B5_流水线处理器_完成过程.md`。
+
 > **B4 更新**：加入性能计数器与简易 icache。
 > * `vsrc/icache.sv`：可配置的直接映射 icache（块大小/块数可调；只有存储器
 >   类型的地址走 cache，SRAM 与设备旁路）；命中当拍返回，不额外增加取指周期；

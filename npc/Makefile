@@ -31,11 +31,16 @@ PERF          ?= 0
 ICACHE_BLOCK  ?= 4
 ICACHE_BLOCKS ?= 16
 ICACHE_SRAM   ?= 0
+# B5: CORE=multi 用多周期核心, 默认 (pipe) 用五级流水线核心
+CORE          ?= pipe
+CORE_DEFS      = $(if $(filter multi,$(CORE)),+define+NPC_MULTICYCLE,)
 NPC_CFG_DEFS   = +define+NPC_ICACHE_BLOCK=$(ICACHE_BLOCK) \
                  +define+NPC_ICACHE_BLOCKS=$(ICACHE_BLOCKS) \
-                 +define+NPC_ICACHE_SRAM=$(ICACHE_SRAM)
+                 +define+NPC_ICACHE_SRAM=$(ICACHE_SRAM) $(CORE_DEFS)
 PERF_DEFS      = $(if $(filter 1,$(PERF)),+define+NPC_PERF,)
-VERILATOR_CFLAGS += $(NPC_CFG_DEFS) $(PERF_DEFS)
+# 额外 define (调试用): make EXTRA_DEFS=+define+NPC_PIPE_DEBUG
+EXTRA_DEFS ?=
+VERILATOR_CFLAGS += $(NPC_CFG_DEFS) $(PERF_DEFS) $(EXTRA_DEFS)
 
 default: $(BIN)
 
@@ -77,13 +82,14 @@ SOC_SRCS  = $(abspath ./vsrc/axi4_if.sv) \
             $(abspath ./vsrc/icache.sv) \
             $(abspath ./vsrc/regfile.sv) \
             $(abspath ./vsrc/npc_core.sv) \
+            $(abspath ./vsrc/npc_pipe_core.sv) \
             $(abspath ./vsrc/axi_arbiter.sv) \
             $(abspath ./vsrc/axi_clint.sv) \
             $(abspath ./vsrc/ysyx_22040000.sv)
 SOC_PERIP = $(shell find $(SOC_HOME)/perip -name '*.v')
 SOC_VERILATOR_FLAGS = --build -cc -O3 --x-assign fast --x-initial fast --noassert \
 	-Wno-fatal --timescale "1ns/1ns" --no-timing --autoflush \
-	$(NPC_CFG_DEFS) $(PERF_DEFS)
+	$(NPC_CFG_DEFS) $(PERF_DEFS) $(EXTRA_DEFS)
 
 $(shell mkdir -p $(BUILD_DIR); printf '%s\n' '$(VERILATOR_CFLAGS)' > $(STANDALONE_FLAGS_FILE).new; cmp -s $(STANDALONE_FLAGS_FILE).new $(STANDALONE_FLAGS_FILE) || mv -f $(STANDALONE_FLAGS_FILE).new $(STANDALONE_FLAGS_FILE))
 $(shell mkdir -p $(BUILD_DIR); printf '%s\n' '$(SOC_VERILATOR_FLAGS)' > $(SOC_FLAGS_FILE).new; cmp -s $(SOC_FLAGS_FILE).new $(SOC_FLAGS_FILE) || mv -f $(SOC_FLAGS_FILE).new $(SOC_FLAGS_FILE))
