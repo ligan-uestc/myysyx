@@ -25,7 +25,11 @@ image: image-dep
 	@echo + OBJCOPY "->" $(IMAGE_REL).bin
 	@$(OBJCOPY) -S --set-section-flags .bss=alloc,contents -O binary $(IMAGE).elf $(IMAGE).bin
 
+# NPCFLAGS / NPC_EXTRA_FLAGS can be used to enable traces (-t) or DiffTest (-d)
+NPCFLAGS += -b -e $(abspath $(IMAGE).elf)
+NPCFLAGS += $(NPC_EXTRA_FLAGS)
+
 run: insert-arg
-	$(MAKE) -C $(NPC_HOME) run IMG=$(abspath $(IMAGE).bin)
+	$(MAKE) -C $(NPC_HOME) run IMG=$(abspath $(IMAGE).bin) ARGS="$(NPCFLAGS)"
 
 .PHONY: insert-arg

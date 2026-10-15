@@ -32,6 +32,13 @@ static void restart() {
 
   /* The zero register is always 0. */
   cpu.gpr[0] = 0;
+
+  /* Clear the CSRs used by the exception response mechanism. */
+  cpu.mstatus = 0;
+  cpu.mtvec   = 0;
+  cpu.mepc    = 0;
+  cpu.mcause  = 0;
+  cpu.satp    = 0;
 }
 
 void init_isa() {

@@ -1,142 +1,241 @@
 // ============================================================================
-// NPC simulation environment (D4: 用RTL实现迷你RISC-V处理器)
+// NPC simulation environment (C2 lecture: 支持RV32E的单周期NPC)
 //
-// The physical memory is modeled here in C++:
-//   * an image (.bin) is loaded at guest address 0x80000000;
-//   * pmem_read()/pmem_write() simulate an aligned 32-bit memory bus and are
-//     called from RTL through DPI-C;
-//   * ebreak() is called by RTL when the guest executes the AM nemu_trap,
-//     which terminates simulation with the $a0 exit code.
+//   * physical memory model (see memory.cpp)
+//   * DPI-C plumbing between the RTL and the memory model
+//   * single-step / sdb (see sdb.cpp)
+//   * itrace / mtrace / ftrace (see trace.cpp)
+//   * Differential Testing against NEMU (see difftest.cpp)
+//
+// Usage: npc [OPTION]... IMAGE
+//   -b, --batch          run until the program stops (no sdb)
+//   -l, --log=FILE       write trace output to FILE (default: stdout)
+//   -e, --elf=FILE       ELF image, needed by ftrace
+//   -d, --diff=REF_SO    enable DiffTest with the NEMU shared library REF_SO
+//   -t, --trace          enable itrace + mtrace + ftrace
+//   -i, --itrace         enable instruction trace
+//   -m, --mtrace         enable memory access trace
+//   -f, --ftrace         enable function call trace
+//   -n, --max-inst=N     stop after N instructions (default 100000000)
+//   -h, --help           print this message
 // ============================================================================
-#include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <cinttypes>
-
 #include <verilated.h>
 #include "Vtop.h"
 
-static const uint32_t PMEM_BASE = 0x80000000u;
-static const uint32_t PMEM_SIZE = 128u * 1024u * 1024u;  // 128 MiB
-static uint8_t pmem[PMEM_SIZE];                          // zero-initialized
+#include "npc_sim.hpp"
 
-static Vtop top;                                         // the DUT
-static bool stop_sim = false;
-static int  trap_code = 0;
-static uint64_t n_inst = 0;
+#include <getopt.h>
 
-static const char *reg_names[16] = {
-  "zero","ra","sp","gp","tp","t0","t1","t2",
-  "s0","s1","a0","a1","a2","a3","a4","a5"
-};
+static Vtop     top;
+static uint64_t g_nr_inst = 0;      // 已完成的指令数
+static uint64_t g_nr_cycles = 0;    // 时钟周期数
+static bool     g_print_step = false;
+static uint64_t g_max_inst = 100000000ull;   // 周期数上限 (防止死循环)
 
-static void dump_gpr(uint32_t pc_now, uint32_t insn) {
-  printf("pc = 0x%08x inst = 0x%08x |", pc_now, insn);
-  for (int i = 0; i < 16; i++) {
-    printf(" %s=0x%08x", reg_names[i], (uint32_t)top.gpr_dbg[i]);
+// ---------------------------------------------------------------------------
+// simulation control
+// ---------------------------------------------------------------------------
+static void collect_gpr(uint32_t *out) {
+  for (int i = 0; i < N_GPR; i ++) { out[i] = (uint32_t)top.gpr_dbg[i]; }
+}
+
+void sim_reset(int n) {
+  top.rst = 1;
+  while (n -- > 0) {
+    top.clk = 0; top.eval();
+    top.clk = 1; top.eval();
   }
-  printf("\n");
+  top.rst = 0;
+  top.clk = 0; top.eval();   // settle the first instruction
 }
 
-static inline uint32_t pmem_offset(uint32_t addr) {
-  return (addr - PMEM_BASE) & (PMEM_SIZE - 1);           // PMEM_SIZE is 2^27
-}
-
-// ---- DPI-C functions imported by npc_core.sv --------------------------------
-
-extern "C" int pmem_read(int raddr) {
-  uint32_t addr = (uint32_t)raddr;
-  uint32_t off  = pmem_offset(addr & ~0x3u);             // aligned 4-byte read
-  uint32_t data;
-  memcpy(&data, &pmem[off], sizeof(data));
-  return (int)data;
-}
-
-extern "C" void pmem_write(int waddr, int wdata, char wmask) {
-  uint32_t addr = (uint32_t)waddr;
-  uint32_t off  = pmem_offset(addr & ~0x3u);             // aligned 4-byte write
-  uint8_t  mask = (uint8_t)wmask;
-  for (int i = 0; i < 4; i++) {
-    if ((mask >> i) & 1) {
-      pmem[off + i] = (uint8_t)(((uint32_t)wdata) >> (8 * i));
-    }
-  }
-}
-
-extern "C" void ebreak(int code) {
-  trap_code = code;
-  stop_sim  = true;
-}
-
-// ---- Simulation driver ------------------------------------------------------
-
-static void single_cycle() {
+// 执行一个时钟周期; 返回本周期是否有一条指令完成 (retire)
+static bool sim_cycle() {
+  // 1) 组合相: 观察当前周期的状态
   top.clk = 0;
   top.eval();
+
+  uint32_t pc    = (uint32_t)top.pc;
+  uint32_t inst  = (uint32_t)top.inst;
+  bool     done  = top.inst_done;
+  bool     mv    = top.mem_valid;
+  bool     mwe   = top.mem_we;
+  uint32_t maddr = (uint32_t)top.mem_addr;
+  uint32_t mdata = mwe ? (uint32_t)top.mem_wdata : (uint32_t)top.mem_rdata;
+  uint32_t msize = (uint32_t)top.mem_size;
+
+  if (g_print_step && done) {
+    std::string text = trace_disasm(pc, inst);
+    printf("0x%08x: %08x  %s\n", pc, inst, text.c_str());
+  }
+
+  // 2) 时钟沿: 提交 (PC / 通用寄存器 / CSR 的更新)
   top.clk = 1;
   top.eval();
-  n_inst++;
+  g_nr_cycles ++;
+
+  if (!done) { return false; }
+  g_nr_inst ++;
+  uint32_t next_pc = (uint32_t)top.next_pc;
+
+  // 3) 指令完成: itrace/mtrace/ftrace
+  trace_observe(pc, inst, next_pc, mv, mwe, maddr, mdata, msize);
+
+  // 4) Differential Testing
+  //    * 最后一条 ebreak 不比对: NPC 在 ebreak 处冻结 PC, 而 NEMU 的
+  //      nemu_trap 会把 PC 置为 pc+4, 两者约定不同;
+  //    * 访问设备的指令 (地址不在 REF 的内存范围内, 例如串口输出) 无法在
+  //      REF 上执行, 采用 skip 策略: 用 DUT 的状态重新同步 REF
+  //      (与 NEMU difftest_skip_ref() 的思路一致)。
+  if (inst != EBREAK_INST) {
+    uint32_t gpr[N_GPR];
+    collect_gpr(gpr);
+    bool is_device_access = mv && (maddr < PMEM_BASE || maddr >= PMEM_BASE + PMEM_SIZE);
+    if (is_device_access) {
+      difftest_sync_regs(gpr, next_pc);
+    }
+    else if (!difftest_check(gpr, next_pc)) {
+      npc_stop(-2);   // difftest mismatch
+    }
+  }
+  return true;
 }
 
-static void reset(int n) {
-  top.rst = 1;
-  while (n-- > 0) single_cycle();
-  top.rst = 0;
+// 执行一条指令 (多周期处理器需要若干个时钟周期)
+void sim_step() {
+  while (!npc_stopped() && g_nr_cycles < g_max_inst) {
+    if (sim_cycle()) { break; }
+  }
+}
+
+void sim_run(long n) {
+  g_print_step = (n >= 0 && n < 10);
+  while (!npc_stopped() && n != 0 && g_nr_cycles < g_max_inst) {
+    sim_step();
+    if (n > 0) { n --; }
+  }
+  g_print_step = false;
+}
+
+uint32_t sim_pc()         { return (uint32_t)top.pc; }
+uint32_t sim_inst()       { return (uint32_t)top.inst; }
+uint32_t sim_gpr(int i)   { return (uint32_t)top.gpr_dbg[i]; }
+uint64_t sim_inst_count() { return g_nr_inst; }
+void     sim_set_print_step(bool on) { g_print_step = on; }
+void     sim_set_max_inst(uint64_t n) { g_max_inst = n; }
+
+void sim_report_result() {
+  double ipc = (g_nr_cycles != 0) ? ((double)g_nr_inst / (double)g_nr_cycles) : 0.0;
+  if (!npc_stopped()) {
+    printf("nemu: TIME OUT after %llu instructions (%llu cycles, IPC = %.3f)\n",
+        (unsigned long long)g_nr_inst, (unsigned long long)g_nr_cycles, ipc);
+    return;
+  }
+  int code = npc_trap_code();
+  if (code == -2) {
+    printf("nemu: HIT BAD TRAP (DiffTest mismatch) at pc = 0x%08x, inst = %llu (%llu cycles, IPC = %.3f)\n",
+        sim_pc(), (unsigned long long)g_nr_inst, (unsigned long long)g_nr_cycles, ipc);
+  }
+  else if (code == 0) {
+    printf("nemu: HIT GOOD TRAP at pc = 0x%08x, inst = %llu (%llu cycles, IPC = %.3f)\n",
+        sim_pc(), (unsigned long long)g_nr_inst, (unsigned long long)g_nr_cycles, ipc);
+  }
+  else {
+    printf("nemu: HIT BAD TRAP (code = %d) at pc = 0x%08x, inst = %llu (%llu cycles, IPC = %.3f)\n",
+        code, sim_pc(), (unsigned long long)g_nr_inst, (unsigned long long)g_nr_cycles, ipc);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// command line
+// ---------------------------------------------------------------------------
+static void usage(const char *argv0) {
+  printf("Usage: %s [OPTION]... IMAGE\n\n", argv0);
+  printf("\t-b, --batch          run until the program stops (no sdb)\n");
+  printf("\t-l, --log=FILE       write trace output to FILE (default stdout)\n");
+  printf("\t-e, --elf=FILE       ELF image (needed by ftrace)\n");
+  printf("\t-d, --diff=REF_SO    enable DiffTest with NEMU shared library REF_SO\n");
+  printf("\t-t, --trace          enable itrace + mtrace + ftrace\n");
+  printf("\t-i, --itrace         enable instruction trace\n");
+  printf("\t-m, --mtrace         enable memory access trace\n");
+  printf("\t-f, --ftrace         enable function trace\n");
+  printf("\t-n, --max-inst=N     stop after N instructions\n");
+  printf("\t-h, --help           print this message\n");
 }
 
 int main(int argc, char *argv[]) {
-  if (argc < 2) {
-    fprintf(stderr, "Usage: %s IMAGE.bin\n", argv[0]);
-    return 1;
-  }
-
+  bool batch = false, itrace = false, mtrace = false, ftrace = false;
+  const char *log_file = nullptr, *elf_file = nullptr, *ref_so = nullptr;
+  const char *img_file = nullptr;
   uint64_t max_inst = 100000000ull;
-  if (argc >= 3) max_inst = strtoull(argv[2], NULL, 10);
-  const char *trace = getenv("NPC_TRACE");
 
-  FILE *fp = fopen(argv[1], "rb");
-  if (fp == NULL) {
-    perror("open image");
-    return 1;
-  }
-  size_t img_size = fread(pmem, 1, PMEM_SIZE, fp);
-  fclose(fp);
-  if (img_size == 0) {
-    fprintf(stderr, "empty image\n");
-    return 1;
-  }
-  printf("Load image: %s (%zu bytes)\n", argv[1], img_size);
+  static const struct option table[] = {
+    {"batch"   , no_argument      , nullptr, 'b'},
+    {"log"     , required_argument, nullptr, 'l'},
+    {"elf"     , required_argument, nullptr, 'e'},
+    {"diff"    , required_argument, nullptr, 'd'},
+    {"trace"   , no_argument      , nullptr, 't'},
+    {"itrace"  , no_argument      , nullptr, 'i'},
+    {"mtrace"  , no_argument      , nullptr, 'm'},
+    {"ftrace"  , no_argument      , nullptr, 'f'},
+    {"max-inst", required_argument, nullptr, 'n'},
+    {"help"    , no_argument      , nullptr, 'h'},
+    {nullptr   , 0                , nullptr,  0 },
+  };
 
-  reset(4);
-
-  while (!stop_sim && n_inst < max_inst) {
-    if (trace && n_inst < 400) {
-      uint32_t pc_now = (uint32_t)top.pc;
-      uint32_t insn = (uint32_t)pmem_read((int)pc_now);
-      dump_gpr(pc_now, insn);
-      if (pc_now == 0x8000009c) {
-        for (uint32_t a = 0x80050fb0; a < 0x80050fe0; a += 4) {
-          printf("    mem[0x%08x] = 0x%08x\n", a,
-                 (uint32_t)pmem_read((int)a));
-        }
-      }
+  int o;
+  while ((o = getopt_long(argc, argv, "-bl:e:d:timfn:h", table, nullptr)) != -1) {
+    switch (o) {
+      case 'b': batch = true; break;
+      case 'l': log_file = optarg; break;
+      case 'e': elf_file = optarg; break;
+      case 'd': ref_so = optarg; break;
+      case 't': itrace = mtrace = ftrace = true; break;
+      case 'i': itrace = true; break;
+      case 'm': mtrace = true; break;
+      case 'f': ftrace = true; break;
+      case 'n': max_inst = strtoull(optarg, nullptr, 0); break;
+      case 1: img_file = optarg; break;
+      default: usage(argv[0]); return 0;
     }
-    single_cycle();
+  }
+  if (img_file == nullptr) { usage(argv[0]); return 1; }
+
+
+  // ---- load the program image into the physical memory ----
+  size_t img_size = 0;
+  npc_load_image(img_file, &img_size);
+  printf("Load image: %s (%zu bytes)\n", img_file, img_size);
+
+  sim_set_max_inst(max_inst);
+  sim_reset(4);
+
+  // ---- trace ----
+  FILE *log_fp = stdout;
+  if (log_file != nullptr) {
+    log_fp = fopen(log_file, "w");
+    if (log_fp == nullptr) { perror("open log"); return 1; }
+  }
+  trace_init(log_fp, itrace, mtrace, ftrace, elf_file);
+
+  // ---- DiffTest ----
+  if (ref_so != nullptr) {
+    if (!difftest_init(ref_so)) { return 1; }
+    difftest_sync_mem(PMEM_BASE, npc_pmem_ptr(), img_size);
+    uint32_t gpr[N_GPR];
+    collect_gpr(gpr);
+    difftest_sync_regs(gpr, sim_pc());
+    printf("DiffTest: DUT = NPC, REF = %s\n", ref_so);
   }
 
-  if (!stop_sim) {
-    printf("nemu: TIME OUT after %" PRIu64 " instructions\n", n_inst);
-    return 1;
+  // ---- run ----
+  if (batch) {
+    sim_run(-1);
+    sim_report_result();
   }
-
-  if (trap_code == 0) {
-    printf("nemu: HIT GOOD TRAP at pc = 0x%08x, inst = %" PRIu64 "\n",
-           (uint32_t)top.pc, n_inst);
-  } else {
-    printf("nemu: HIT BAD TRAP (code = %d) at pc = 0x%08x, inst = %" PRIu64 "\n",
-           trap_code, (uint32_t)top.pc, n_inst);
+  else {
+    sdb_mainloop();
   }
-
-  return trap_code == 0 ? 0 : 1;
+  if (log_fp != stdout && log_fp != nullptr) { fclose(log_fp); }
+  return (npc_stopped() && npc_trap_code() == 0) ? 0 : 1;
 }

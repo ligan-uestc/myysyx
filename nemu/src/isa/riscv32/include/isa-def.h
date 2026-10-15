@@ -18,9 +18,16 @@
 
 #include <common.h>
 
+/* mstatus bits used by the exception response mechanism (PA3) */
+#define MSTATUS_MIE   (1u << 3)   // machine interrupt enable
+#define MSTATUS_MPIE  (1u << 7)   // previous MIE
+#define MSTATUS_MPRV  (1u << 17)  // modify privilege (used by AM's trap.S)
+
 typedef struct {
   word_t gpr[MUXDEF(CONFIG_RVE, 16, 32)];
   vaddr_t pc;
+  /* CSRs used by the CTE: mtvec/mepc/mcause/mstatus, plus satp (VME, PA4) */
+  word_t mstatus, mtvec, mepc, mcause, satp;
 } MUXDEF(CONFIG_RV64, riscv64_CPU_state, riscv32_CPU_state);
 
 // decode

@@ -60,6 +60,10 @@ __am_asm_trap:
   mv a0, sp
   call __am_irq_handle
 
+  # __am_irq_handle() 返回的上下文可能来自另一个线程 (上下文切换),
+  # 因此先把栈顶切换到这个上下文, 再从它恢复现场。
+  mv sp, a0
+
   LOAD t1, OFFSET_STATUS(sp)
   LOAD t2, OFFSET_EPC(sp)
   csrw mstatus, t1
